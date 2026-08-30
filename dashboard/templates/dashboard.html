@@ -263,6 +263,38 @@
       color: #555;
       margin-top: 4px;
     }
+
+    /* ── Editable location ── */
+    #location-display { display: flex; align-items: center; gap: 8px; }
+    #btn-edit-location {
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      background: #222;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #777;
+      cursor: pointer;
+    }
+    #btn-edit-location:hover { color: #ccc; border-color: #555; }
+
+    #location-edit {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+
+    #location-input {
+      background: #222;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #eee;
+      padding: 5px 10px;
+      font-size: 0.9rem;
+      min-width: 200px;
+    }
+    #location-input:focus { outline: none; border-color: #2a7; }
   </style>
 </head>
 <body>
@@ -286,7 +318,16 @@
     <div class="detail-header">
       <div class="status-dot" id="d-status-dot"></div>
       <div>
-        <h2 id="d-location"></h2>
+        <div id="location-display">
+          <h2 id="d-location"></h2>
+          <button id="btn-edit-location" onclick="startEditLocation()">Edit</button>
+        </div>
+        <div id="location-edit">
+          <input id="location-input" type="text" placeholder="Location name"
+                 onkeydown="if(event.key==='Enter')saveLocation();if(event.key==='Escape')cancelEditLocation();">
+          <button class="btn-primary" style="padding:5px 12px;font-size:0.82rem;" onclick="saveLocation()">Save</button>
+          <button class="btn-secondary" style="padding:5px 12px;font-size:0.82rem;" onclick="cancelEditLocation()">Cancel</button>
+        </div>
         <div class="unit-id" id="d-id"></div>
       </div>
     </div>
@@ -296,8 +337,11 @@
       <div class="info-row">
         <div class="info-item"><label>Status</label><span id="d-online"></span></div>
         <div class="info-item"><label>Last seen</label><span id="d-last-seen"></span></div>
+        <div class="info-item"><label>Registered</label><span id="d-registered"></span></div>
         <div class="info-item"><label>Interval</label><span id="d-interval"></span></div>
         <div class="info-item"><label>Crop</label><span id="d-crop"></span></div>
+        <div class="info-item"><label>Pending cmds</label><span id="d-pending"></span></div>
+        <div class="info-item"><label>Last snapshot</label><span id="d-snap-info"></span></div>
       </div>
     </div>
 
@@ -426,14 +470,20 @@
     const dot = document.getElementById('d-status-dot');
     dot.className = 'status-dot ' + (unit.online ? 'online' : 'offline');
 
-    document.getElementById('d-online').textContent    = unit.online ? 'Online' : 'Offline';
-    document.getElementById('d-last-seen').textContent = timeAgo(unit.last_seen);
-    document.getElementById('d-interval').textContent  = unit.config?.interval ?? '—';
+    document.getElementById('d-online').textContent     = unit.online ? 'Online' : 'Offline';
+    document.getElementById('d-last-seen').textContent  = timeAgo(unit.last_seen);
+    document.getElementById('d-registered').textContent = unit.registered_at ? formatDate(unit.registered_at) : '—';
+    document.getElementById('d-interval').textContent   = unit.config?.interval ?? '—';
+    document.getElementById('d-pending').textContent    = unit.pending_commands_count ?? 0;
 
     const crop = unit.crop ?? null;
     document.getElementById('d-crop').textContent = crop
       ? `x:${crop.x} y:${crop.y} w:${crop.w} h:${crop.h}`
       : 'Full frame';
+
+    document.getElementById('d-snap-info').textContent = unit.has_snapshot
+      ? `${unit.snapshot_width ?? '?'}×${unit.snapshot_height ?? '?'} · ${timeAgo(unit.snapshot_timestamp)}`
+      : '—';
 
     document.querySelectorAll('.interval-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.val === unit.config?.interval);
@@ -672,6 +722,35 @@
     if (!confirm(`Stop unit "${selectedId}"?`)) return;
     await fetch(`/api/units/${selectedId}/commands/stop`, { method: 'POST' });
     setStatus('Stop command queued.');
+  }
+
+  // ── Location editing ───────────────────────────────────────────────────────
+  function startEditLocation() {
+    document.getElementById('location-input').value =
+      document.getElementById('d-location').textContent;
+    document.getElementById('location-edit').style.display = 'flex';
+    document.getElementById('location-input').focus();
+  }
+
+  function cancelEditLocation() {
+    document.getElementById('location-edit').style.display = 'none';
+  }
+
+  async function saveLocation() {
+    const name = document.getElementById('location-input').value.trim();
+    if (!name) return;
+    await fetch(`/api/units/${selectedId}/commands/location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location: name }),
+    });
+    cancelEditLocation();
+    setStatus(`Location "${name}" queued — applies on next poll, persists across restarts.`);
+    refreshDetail();
+  }
+
+  function formatDate(isoStr) {
+    return new Date(isoStr + 'Z').toLocaleString();
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────

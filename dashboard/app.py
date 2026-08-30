@@ -19,7 +19,7 @@ def register():
 @app.route("/api/units/<unit_id>/poll", methods=["POST"])
 def poll(unit_id):
     d = request.get_json()
-    commands = store.poll_unit(unit_id, d.get("config", {}))
+    commands = store.poll_unit(unit_id, d.get("config", {}), d.get("location"))
     return jsonify({"commands": commands})
 
 
@@ -91,6 +91,18 @@ def set_interval(unit_id):
         return jsonify({"error": "interval must be 30s, 1min, or 2min"}), 400
     if not store.queue_command(unit_id, {"type": "set_interval", "interval": interval}):
         abort(404)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/location", methods=["POST"])
+def set_location(unit_id):
+    d = request.get_json()
+    location = (d.get("location") or "").strip()
+    if not location:
+        return jsonify({"error": "location must not be empty"}), 400
+    if not store.queue_command(unit_id, {"type": "set_location", "location": location}):
+        abort(404)
+    store.set_unit_location(unit_id, location)
     return jsonify({"status": "queued"})
 
 

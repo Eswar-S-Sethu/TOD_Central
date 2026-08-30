@@ -40,14 +40,16 @@ def register_unit(unit_id, location, config):
         }
 
 
-def poll_unit(unit_id, config):
-    """Updates last_seen and config; returns and clears pending commands."""
+def poll_unit(unit_id, config, location=None):
+    """Updates last_seen, config, and optionally location; returns and clears pending commands."""
     with _lock:
         if unit_id not in _units:
             return []
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
         unit["config"]    = config
+        if location:
+            unit["location"] = location
         commands = list(unit["pending_commands"])
         unit["pending_commands"] = []
         return commands
@@ -88,15 +90,20 @@ def get_unit(unit_id):
         u = _units.get(unit_id)
         if not u:
             return None
+        snap = u["snapshot"]
         return {
-            "id":               u["id"],
-            "location":         u["location"],
-            "online":           _is_online(u),
-            "last_seen":        u["last_seen"],
-            "config":           u["config"],
-            "has_snapshot":     u["snapshot"] is not None,
-            "snapshot_timestamp": u["snapshot"]["timestamp"] if u["snapshot"] else None,
-            "crop":             u.get("dashboard_crop"),
+            "id":                    u["id"],
+            "location":              u["location"],
+            "online":                _is_online(u),
+            "registered_at":         u["registered_at"],
+            "last_seen":             u["last_seen"],
+            "config":                u["config"],
+            "has_snapshot":          snap is not None,
+            "snapshot_timestamp":    snap["timestamp"] if snap else None,
+            "snapshot_width":        snap["width"]     if snap else None,
+            "snapshot_height":       snap["height"]    if snap else None,
+            "pending_commands_count": len(u["pending_commands"]),
+            "crop":                  u.get("dashboard_crop"),
         }
 
 
@@ -104,6 +111,14 @@ def get_snapshot(unit_id):
     with _lock:
         u = _units.get(unit_id)
         return dict(u["snapshot"]) if u and u.get("snapshot") else None
+
+
+def set_unit_location(unit_id, location):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["location"] = location
+        return True
 
 
 def set_unit_crop(unit_id, crop):
