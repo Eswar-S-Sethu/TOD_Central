@@ -87,7 +87,7 @@
       font-size: 0.95rem;
     }
 
-    #detail { display: none; max-width: 900px; }
+    #detail { display: none; max-width: 1100px; }
 
     .detail-header {
       display: flex;
@@ -117,10 +117,31 @@
       margin-bottom: 14px;
     }
 
-    /* ── Snapshot ── */
+    /* ── Two-panel snapshot layout ── */
+    #snap-panels {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .snap-panel {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .snap-panel-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #555;
+      margin-bottom: 8px;
+    }
+
+    /* ── Full-frame panel ── */
     #snap-wrapper {
       position: relative;
-      display: inline-block;
+      display: block;
       width: 100%;
     }
 
@@ -131,7 +152,7 @@
       height: auto;
       border-radius: 4px;
       background: #0d0d0d;
-      min-height: 180px;
+      min-height: 120px;
     }
 
     #snap-canvas {
@@ -145,11 +166,34 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 200px;
+      height: 180px;
       color: #444;
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       background: #0d0d0d;
       border-radius: 4px;
+      text-align: center;
+      padding: 16px;
+    }
+
+    /* ── Crop-preview panel ── */
+    #crop-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 180px;
+      color: #444;
+      font-size: 0.85rem;
+      background: #0d0d0d;
+      border-radius: 4px;
+      text-align: center;
+      padding: 16px;
+    }
+
+    #crop-canvas {
+      display: none;
+      width: 100%;
+      border-radius: 4px;
+      background: #0d0d0d;
     }
 
     /* ── Buttons ── */
@@ -175,7 +219,6 @@
     .btn-primary  { background: #2a7; color: #fff; }
     .btn-secondary{ background: #333; color: #ccc; }
     .btn-danger   { background: #833; color: #fff; }
-    .btn-warning  { background: #742; color: #fff; }
 
     /* ── Interval selector ── */
     .interval-options { display: flex; gap: 6px; }
@@ -262,11 +305,25 @@
     <div class="section">
       <div class="section-title">Snapshot &amp; Crop Setup</div>
 
-      <div id="snap-placeholder">No snapshot yet — click Request Snapshot.</div>
+      <div id="snap-panels">
 
-      <div id="snap-wrapper" style="display:none;">
-        <img id="snap-img" alt="snapshot">
-        <canvas id="snap-canvas"></canvas>
+        <!-- Left: full frame with crop overlay -->
+        <div class="snap-panel">
+          <div class="snap-panel-label">Full Frame</div>
+          <div id="snap-placeholder">No snapshot yet — click Request Snapshot.</div>
+          <div id="snap-wrapper" style="display:none;">
+            <img id="snap-img" alt="snapshot">
+            <canvas id="snap-canvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Right: crop preview -->
+        <div class="snap-panel">
+          <div class="snap-panel-label">Crop Preview</div>
+          <div id="crop-placeholder">Request a snapshot and apply a crop to see a preview.</div>
+          <canvas id="crop-canvas"></canvas>
+        </div>
+
       </div>
 
       <div id="snap-status"></div>
@@ -303,15 +360,15 @@
 
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
-  let selectedId       = null;
-  let lastSnapshotTs   = null;   // timestamp of last received snapshot
-  let snapshotPollTimer = null;  // interval timer while waiting for snapshot
-  let currentRect      = null;   // rectangle drawn by user (canvas coords)
-  let savedCrop        = null;   // last confirmed crop from unit config (frame coords)
+  let selectedId        = null;
+  let lastSnapshotTs    = null;   // timestamp of last received snapshot
+  let snapshotPollTimer = null;   // interval timer while waiting for snapshot
+  let currentRect       = null;   // rectangle drawn by user (canvas coords)
+  let savedCrop         = null;   // confirmed crop region (frame coords)
 
   // ── Unit list ──────────────────────────────────────────────────────────────
   async function loadUnits() {
-    const res = await fetch('/api/units');
+    const res   = await fetch('/api/units');
     const units = await res.json();
     const list  = document.getElementById('unit-list');
 
@@ -335,28 +392,31 @@
 
   function timeAgo(isoStr) {
     const diff = Math.floor((Date.now() - new Date(isoStr + 'Z')) / 1000);
-    if (diff < 60)  return diff + 's ago';
-    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
-    return Math.floor(diff/3600) + 'h ago';
+    if (diff < 60)   return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    return Math.floor(diff / 3600) + 'h ago';
   }
 
   // ── Unit detail ────────────────────────────────────────────────────────────
   async function selectUnit(id) {
-    selectedId = id;
+    selectedId     = id;
+    lastSnapshotTs = null;
+    currentRect    = null;
+    savedCrop      = null;
     clearSnapshotPoll();
-    currentRect = null;
+    resetCropPanel();
+
     document.getElementById('empty-state').style.display = 'none';
-    document.getElementById('detail').style.display = 'block';
+    document.getElementById('detail').style.display      = 'block';
     loadUnits();
     await refreshDetail();
   }
 
   async function refreshDetail() {
     if (!selectedId) return;
-    const res  = await fetch(`/api/units/${selectedId}`);
+    const res = await fetch(`/api/units/${selectedId}`);
     if (!res.ok) return;
-    const unit = await res.json();
-    renderDetail(unit);
+    renderDetail(await res.json());
   }
 
   function renderDetail(unit) {
@@ -370,40 +430,44 @@
     document.getElementById('d-last-seen').textContent = timeAgo(unit.last_seen);
     document.getElementById('d-interval').textContent  = unit.config?.interval ?? '—';
 
-    const crop = unit.config?.crop;
+    const crop = unit.crop ?? null;
     document.getElementById('d-crop').textContent = crop
       ? `x:${crop.x} y:${crop.y} w:${crop.w} h:${crop.h}`
       : 'Full frame';
 
-    // Update interval button highlight
     document.querySelectorAll('.interval-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.val === unit.config?.interval);
     });
 
-    // Update saved crop for canvas overlay
-    savedCrop = crop ?? null;
+    // Update saved crop and redraw crop preview if snapshot is already loaded
+    savedCrop = crop;
+    const img = document.getElementById('snap-img');
+    if (img.naturalWidth) drawCroppedView();
 
-    // Show snapshot if available and timestamp changed
+    // Show snapshot when timestamp changes
     if (unit.has_snapshot && unit.snapshot_timestamp !== lastSnapshotTs) {
       lastSnapshotTs = unit.snapshot_timestamp;
       showSnapshot();
     }
 
-    // Update snapshot rate-limit display
     const rem = unit.snapshot_requests_remaining ?? '?';
     document.getElementById('snap-requests-left').textContent =
       `Snapshot requests remaining this minute: ${rem}/10`;
   }
 
-  // ── Snapshot display + canvas ──────────────────────────────────────────────
+  // ── Full-frame snapshot display + crop overlay canvas ──────────────────────
   function showSnapshot() {
     const img         = document.getElementById('snap-img');
     const wrapper     = document.getElementById('snap-wrapper');
     const placeholder = document.getElementById('snap-placeholder');
-    img.src           = `/api/units/${selectedId}/snapshot.jpg?t=${Date.now()}`;
-    wrapper.style.display   = 'inline-block';
+    img.src                   = `/api/units/${selectedId}/snapshot.jpg?t=${Date.now()}`;
+    wrapper.style.display     = 'block';
     placeholder.style.display = 'none';
-    img.onload = () => { syncCanvas(); drawOverlay(); };
+    img.onload = () => {
+      syncCanvas();
+      drawOverlay();
+      drawCroppedView();
+    };
   }
 
   function syncCanvas() {
@@ -417,8 +481,8 @@
     const canvas = document.getElementById('snap-canvas');
     const ctx    = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (savedCrop)   drawRect(ctx, toDisplay(savedCrop), '#2a7',  'saved crop');
-    if (currentRect) drawRect(ctx, currentRect,           '#f80',  '');
+    if (savedCrop)   drawRect(ctx, toDisplay(savedCrop), '#2a7', 'saved crop');
+    if (currentRect) drawRect(ctx, currentRect,          '#f80', '');
   }
 
   function drawRect(ctx, r, color, label) {
@@ -455,14 +519,54 @@
     };
   }
 
-  // Canvas mouse events
+  // ── Crop preview panel ─────────────────────────────────────────────────────
+  function drawCroppedView() {
+    const img         = document.getElementById('snap-img');
+    const canvas      = document.getElementById('crop-canvas');
+    const placeholder = document.getElementById('crop-placeholder');
+
+    if (!savedCrop || !img.naturalWidth) {
+      canvas.style.display      = 'none';
+      placeholder.style.display = 'flex';
+      placeholder.textContent   = img.naturalWidth
+        ? 'No crop set — draw a rectangle and click Apply Crop.'
+        : 'Request a snapshot and apply a crop to see a preview.';
+      return;
+    }
+
+    placeholder.style.display = 'none';
+    canvas.style.display      = 'block';
+
+    // Size canvas to fill panel width, maintain crop aspect ratio
+    const panelW  = canvas.parentElement.offsetWidth;
+    const aspect  = savedCrop.h > 0 ? savedCrop.w / savedCrop.h : 16 / 9;
+    canvas.width  = panelW;
+    canvas.height = Math.round(panelW / aspect);
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(
+      img,
+      savedCrop.x, savedCrop.y, savedCrop.w, savedCrop.h,   // source region (frame pixels)
+      0, 0, canvas.width, canvas.height                       // fill the canvas
+    );
+  }
+
+  function resetCropPanel() {
+    const canvas      = document.getElementById('crop-canvas');
+    const placeholder = document.getElementById('crop-placeholder');
+    canvas.style.display      = 'none';
+    placeholder.style.display = 'flex';
+    placeholder.textContent   = 'Request a snapshot and apply a crop to see a preview.';
+  }
+
+  // ── Canvas mouse events ────────────────────────────────────────────────────
   let dragging = false, dragSx = 0, dragSy = 0;
 
   document.getElementById('snap-canvas').addEventListener('mousedown', e => {
     const r = e.currentTarget.getBoundingClientRect();
     dragSx = e.clientX - r.left;
     dragSy = e.clientY - r.top;
-    dragging = true;
+    dragging    = true;
     currentRect = null;
   });
 
@@ -481,7 +585,7 @@
 
   document.getElementById('snap-canvas').addEventListener('mouseup', () => { dragging = false; });
 
-  window.addEventListener('resize', () => { syncCanvas(); drawOverlay(); });
+  window.addEventListener('resize', () => { syncCanvas(); drawOverlay(); drawCroppedView(); });
 
   // ── Snapshot request ───────────────────────────────────────────────────────
   async function requestSnapshot() {
@@ -495,7 +599,6 @@
       return;
     }
 
-    // Poll for the new snapshot arriving (compare timestamps)
     clearSnapshotPoll();
     const beforeTs = lastSnapshotTs;
     snapshotPollTimer = setInterval(async () => {
@@ -507,7 +610,6 @@
       }
     }, 2000);
 
-    // Timeout after 30 s
     setTimeout(() => {
       if (snapshotPollTimer) {
         clearSnapshotPoll();
@@ -533,6 +635,7 @@
     savedCrop   = f;
     currentRect = null;
     drawOverlay();
+    drawCroppedView();
     setStatus(`Crop queued — will apply on next poll (x:${f.x} y:${f.y} w:${f.w} h:${f.h}).`);
     document.getElementById('btn-crop-apply').disabled = true;
     refreshDetail();
@@ -543,6 +646,7 @@
     savedCrop   = null;
     currentRect = null;
     drawOverlay();
+    drawCroppedView();
     setStatus('Clear crop queued — will apply on next poll.');
     refreshDetail();
   }
@@ -576,12 +680,10 @@
   }
 
   // ── Polling ────────────────────────────────────────────────────────────────
-  setInterval(loadUnits, 15000);          // Refresh sidebar every 15 s
-  setInterval(() => {                     // Refresh detail panel every 10 s
-    if (selectedId) refreshDetail();
-  }, 10000);
+  setInterval(loadUnits, 15000);
+  setInterval(() => { if (selectedId) refreshDetail(); }, 10000);
 
-  loadUnits();  // Initial load
+  loadUnits();
 </script>
 </body>
 </html>

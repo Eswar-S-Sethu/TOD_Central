@@ -36,6 +36,7 @@ def register_unit(unit_id, location, config):
             "pending_commands": existing.get("pending_commands", []),
             "snapshot":        existing.get("snapshot"),
             "_snap_times":     existing.get("_snap_times", []),
+            "dashboard_crop":  existing.get("dashboard_crop"),
         }
 
 
@@ -95,6 +96,7 @@ def get_unit(unit_id):
             "config":           u["config"],
             "has_snapshot":     u["snapshot"] is not None,
             "snapshot_timestamp": u["snapshot"]["timestamp"] if u["snapshot"] else None,
+            "crop":             u.get("dashboard_crop"),
         }
 
 
@@ -102,6 +104,22 @@ def get_snapshot(unit_id):
     with _lock:
         u = _units.get(unit_id)
         return dict(u["snapshot"]) if u and u.get("snapshot") else None
+
+
+def set_unit_crop(unit_id, crop):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["dashboard_crop"] = crop
+        return True
+
+
+def clear_unit_crop(unit_id):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["dashboard_crop"] = None
+        return True
 
 
 def queue_command(unit_id, command):

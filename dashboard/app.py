@@ -68,10 +68,10 @@ def request_snapshot(unit_id):
 @app.route("/api/units/<unit_id>/commands/crop", methods=["POST"])
 def set_crop(unit_id):
     d = request.get_json()
-    if not store.queue_command(unit_id, {"type": "set_crop", "data": {
-        "x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]
-    }}):
+    crop = {"x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]}
+    if not store.queue_command(unit_id, {"type": "set_crop", "data": crop}):
         abort(404)
+    store.set_unit_crop(unit_id, crop)
     return jsonify({"status": "queued"})
 
 
@@ -79,6 +79,7 @@ def set_crop(unit_id):
 def clear_crop(unit_id):
     if not store.queue_command(unit_id, {"type": "clear_crop"}):
         abort(404)
+    store.clear_unit_crop(unit_id)
     return jsonify({"status": "queued"})
 
 
