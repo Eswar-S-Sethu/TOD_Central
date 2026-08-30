@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TOD Camera Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #111;
+      color: #ddd;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 280px;
+      min-width: 220px;
+      background: #1a1a1a;
+      border-right: 1px solid #2a2a2a;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #sidebar-header {
+      padding: 18px 16px 14px;
+      border-bottom: 1px solid #2a2a2a;
+    }
+
+    #sidebar-header h1 { font-size: 1rem; font-weight: 600; color: #fff; }
+    #sidebar-header p  { font-size: 0.75rem; color: #666; margin-top: 2px; }
+
+    #unit-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .unit-card {
+      padding: 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      border: 1px solid transparent;
+      transition: background 0.15s;
+    }
+
+    .unit-card:hover           { background: #242424; }
+    .unit-card.selected        { background: #1e2a1e; border-color: #2a7; }
+
+    .unit-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.online  { background: #2a7; }
+    .status-dot.offline { background: #666; }
+
+    .unit-name    { font-size: 0.9rem; font-weight: 500; color: #eee; }
+    .unit-id      { font-size: 0.75rem; color: #555; margin-top: 2px; }
+    .unit-seen    { font-size: 0.72rem; color: #555; margin-top: 4px; }
+
+    /* ── Main panel ── */
+    #main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    #empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #444;
+      font-size: 0.95rem;
+    }
+
+    #detail { display: none; max-width: 900px; }
+
+    .detail-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .detail-header h2 { font-size: 1.2rem; font-weight: 600; color: #fff; }
+    .detail-header .unit-id { font-size: 0.8rem; color: #555; }
+
+    /* ── Sections ── */
+    .section {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #555;
+      margin-bottom: 14px;
+    }
+
+    /* ── Snapshot ── */
+    #snap-wrapper {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+    }
+
+    #snap-img {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+      background: #0d0d0d;
+      min-height: 180px;
+    }
+
+    #snap-canvas {
+      position: absolute;
+      inset: 0;
+      cursor: crosshair;
+      border-radius: 4px;
+    }
+
+    #snap-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 200px;
+      color: #444;
+      font-size: 0.9rem;
+      background: #0d0d0d;
+      border-radius: 4px;
+    }
+
+    /* ── Buttons ── */
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    button {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+
+    button:disabled { opacity: 0.4; cursor: default; }
+
+    .btn-primary  { background: #2a7; color: #fff; }
+    .btn-secondary{ background: #333; color: #ccc; }
+    .btn-danger   { background: #833; color: #fff; }
+    .btn-warning  { background: #742; color: #fff; }
+
+    /* ── Interval selector ── */
+    .interval-options { display: flex; gap: 6px; }
+
+    .interval-btn {
+      padding: 6px 14px;
+      border-radius: 5px;
+      border: 1px solid #333;
+      background: #222;
+      color: #bbb;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+
+    .interval-btn.active {
+      background: #1e2a1e;
+      border-color: #2a7;
+      color: #2a7;
+    }
+
+    /* ── Info row ── */
+    .info-row {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      font-size: 0.85rem;
+    }
+
+    .info-item label { color: #555; margin-right: 6px; }
+    .info-item span  { color: #ccc; }
+
+    /* ── Status message ── */
+    #snap-status {
+      font-size: 0.8rem;
+      color: #777;
+      margin-top: 8px;
+      min-height: 1.2em;
+    }
+
+    #snap-requests-left {
+      font-size: 0.75rem;
+      color: #555;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ─────────────────────────────────────────────────────────────── -->
+<aside id="sidebar">
+  <div id="sidebar-header">
+    <h1>TOD Camera</h1>
+    <p>Dashboard</p>
+  </div>
+  <div id="unit-list"><p style="padding:12px;color:#444;font-size:0.85rem;">Loading&hellip;</p></div>
+</aside>
+
+<!-- ── Main panel ──────────────────────────────────────────────────────────── -->
+<main id="main">
+  <div id="empty-state">Select a camera unit from the sidebar.</div>
+
+  <div id="detail">
+
+    <!-- Header -->
+    <div class="detail-header">
+      <div class="status-dot" id="d-status-dot"></div>
+      <div>
+        <h2 id="d-location"></h2>
+        <div class="unit-id" id="d-id"></div>
+      </div>
+    </div>
+
+    <!-- Info row -->
+    <div class="section">
+      <div class="info-row">
+        <div class="info-item"><label>Status</label><span id="d-online"></span></div>
+        <div class="info-item"><label>Last seen</label><span id="d-last-seen"></span></div>
+        <div class="info-item"><label>Interval</label><span id="d-interval"></span></div>
+        <div class="info-item"><label>Crop</label><span id="d-crop"></span></div>
+      </div>
+    </div>
+
+    <!-- Snapshot + crop -->
+    <div class="section">
+      <div class="section-title">Snapshot &amp; Crop Setup</div>
+
+      <div id="snap-placeholder">No snapshot yet — click Request Snapshot.</div>
+
+      <div id="snap-wrapper" style="display:none;">
+        <img id="snap-img" alt="snapshot">
+        <canvas id="snap-canvas"></canvas>
+      </div>
+
+      <div id="snap-status"></div>
+      <div id="snap-requests-left"></div>
+
+      <div class="btn-row">
+        <button class="btn-primary"   id="btn-snap-req"   onclick="requestSnapshot()">Request Snapshot</button>
+        <button class="btn-secondary" id="btn-crop-apply" onclick="applyCrop()" disabled>Apply Crop</button>
+        <button class="btn-secondary" id="btn-crop-clear" onclick="clearCrop()">Clear Crop</button>
+      </div>
+    </div>
+
+    <!-- Interval -->
+    <div class="section">
+      <div class="section-title">Capture Interval</div>
+      <div class="interval-options">
+        <button class="interval-btn" data-val="30s"  onclick="setInterval_('30s')">30 seconds</button>
+        <button class="interval-btn" data-val="1min" onclick="setInterval_('1min')">1 minute</button>
+        <button class="interval-btn" data-val="2min" onclick="setInterval_('2min')">2 minutes</button>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="section">
+      <div class="section-title">Actions</div>
+      <div class="btn-row">
+        <button class="btn-secondary" onclick="triggerSnap()">Take Capture Now</button>
+        <button class="btn-danger"    onclick="stopUnit()">Stop Unit</button>
+      </div>
+    </div>
+
+  </div><!-- #detail -->
+</main>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let selectedId       = null;
+  let lastSnapshotTs   = null;   // timestamp of last received snapshot
+  let snapshotPollTimer = null;  // interval timer while waiting for snapshot
+  let currentRect      = null;   // rectangle drawn by user (canvas coords)
+  let savedCrop        = null;   // last confirmed crop from unit config (frame coords)
+
+  // ── Unit list ──────────────────────────────────────────────────────────────
+  async function loadUnits() {
+    const res = await fetch('/api/units');
+    const units = await res.json();
+    const list  = document.getElementById('unit-list');
+
+    if (!units.length) {
+      list.innerHTML = '<p style="padding:12px;color:#444;font-size:0.85rem;">No units registered yet.</p>';
+      return;
+    }
+
+    list.innerHTML = units.map(u => `
+      <div class="unit-card ${u.id === selectedId ? 'selected' : ''}"
+           onclick="selectUnit('${u.id}')">
+        <div class="unit-card-header">
+          <div class="status-dot ${u.online ? 'online' : 'offline'}"></div>
+          <div class="unit-name">${u.location}</div>
+        </div>
+        <div class="unit-id">${u.id}</div>
+        <div class="unit-seen">${u.online ? 'Online' : 'Last seen ' + timeAgo(u.last_seen)}</div>
+      </div>
+    `).join('');
+  }
+
+  function timeAgo(isoStr) {
+    const diff = Math.floor((Date.now() - new Date(isoStr + 'Z')) / 1000);
+    if (diff < 60)  return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    return Math.floor(diff/3600) + 'h ago';
+  }
+
+  // ── Unit detail ────────────────────────────────────────────────────────────
+  async function selectUnit(id) {
+    selectedId = id;
+    clearSnapshotPoll();
+    currentRect = null;
+    document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('detail').style.display = 'block';
+    loadUnits();
+    await refreshDetail();
+  }
+
+  async function refreshDetail() {
+    if (!selectedId) return;
+    const res  = await fetch(`/api/units/${selectedId}`);
+    if (!res.ok) return;
+    const unit = await res.json();
+    renderDetail(unit);
+  }
+
+  function renderDetail(unit) {
+    document.getElementById('d-location').textContent = unit.location;
+    document.getElementById('d-id').textContent       = unit.id;
+
+    const dot = document.getElementById('d-status-dot');
+    dot.className = 'status-dot ' + (unit.online ? 'online' : 'offline');
+
+    document.getElementById('d-online').textContent    = unit.online ? 'Online' : 'Offline';
+    document.getElementById('d-last-seen').textContent = timeAgo(unit.last_seen);
+    document.getElementById('d-interval').textContent  = unit.config?.interval ?? '—';
+
+    const crop = unit.config?.crop;
+    document.getElementById('d-crop').textContent = crop
+      ? `x:${crop.x} y:${crop.y} w:${crop.w} h:${crop.h}`
+      : 'Full frame';
+
+    // Update interval button highlight
+    document.querySelectorAll('.interval-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.val === unit.config?.interval);
+    });
+
+    // Update saved crop for canvas overlay
+    savedCrop = crop ?? null;
+
+    // Show snapshot if available and timestamp changed
+    if (unit.has_snapshot && unit.snapshot_timestamp !== lastSnapshotTs) {
+      lastSnapshotTs = unit.snapshot_timestamp;
+      showSnapshot();
+    }
+
+    // Update snapshot rate-limit display
+    const rem = unit.snapshot_requests_remaining ?? '?';
+    document.getElementById('snap-requests-left').textContent =
+      `Snapshot requests remaining this minute: ${rem}/10`;
+  }
+
+  // ── Snapshot display + canvas ──────────────────────────────────────────────
+  function showSnapshot() {
+    const img         = document.getElementById('snap-img');
+    const wrapper     = document.getElementById('snap-wrapper');
+    const placeholder = document.getElementById('snap-placeholder');
+    img.src           = `/api/units/${selectedId}/snapshot.jpg?t=${Date.now()}`;
+    wrapper.style.display   = 'inline-block';
+    placeholder.style.display = 'none';
+    img.onload = () => { syncCanvas(); drawOverlay(); };
+  }
+
+  function syncCanvas() {
+    const img    = document.getElementById('snap-img');
+    const canvas = document.getElementById('snap-canvas');
+    canvas.width  = img.offsetWidth;
+    canvas.height = img.offsetHeight;
+  }
+
+  function drawOverlay() {
+    const canvas = document.getElementById('snap-canvas');
+    const ctx    = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (savedCrop)   drawRect(ctx, toDisplay(savedCrop), '#2a7',  'saved crop');
+    if (currentRect) drawRect(ctx, currentRect,           '#f80',  '');
+  }
+
+  function drawRect(ctx, r, color, label) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([]);
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+    if (label) {
+      ctx.fillStyle = color;
+      ctx.font      = '12px system-ui';
+      ctx.fillText(label, r.x + 4, r.y + 14);
+    }
+  }
+
+  // Frame coords ↔ canvas display coords
+  function toDisplay(r) {
+    const img = document.getElementById('snap-img');
+    if (!img.naturalWidth) return r;
+    return {
+      x: r.x * img.offsetWidth  / img.naturalWidth,
+      y: r.y * img.offsetHeight / img.naturalHeight,
+      w: r.w * img.offsetWidth  / img.naturalWidth,
+      h: r.h * img.offsetHeight / img.naturalHeight,
+    };
+  }
+
+  function toFrame(r) {
+    const img = document.getElementById('snap-img');
+    return {
+      x: Math.round(r.x * img.naturalWidth  / img.offsetWidth),
+      y: Math.round(r.y * img.naturalHeight / img.offsetHeight),
+      w: Math.round(r.w * img.naturalWidth  / img.offsetWidth),
+      h: Math.round(r.h * img.naturalHeight / img.offsetHeight),
+    };
+  }
+
+  // Canvas mouse events
+  let dragging = false, dragSx = 0, dragSy = 0;
+
+  document.getElementById('snap-canvas').addEventListener('mousedown', e => {
+    const r = e.currentTarget.getBoundingClientRect();
+    dragSx = e.clientX - r.left;
+    dragSy = e.clientY - r.top;
+    dragging = true;
+    currentRect = null;
+  });
+
+  document.getElementById('snap-canvas').addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    currentRect = {
+      x: Math.min(dragSx, x), y: Math.min(dragSy, y),
+      w: Math.abs(x - dragSx), h: Math.abs(y - dragSy),
+    };
+    syncCanvas();
+    drawOverlay();
+    document.getElementById('btn-crop-apply').disabled = (currentRect.w < 10 || currentRect.h < 10);
+  });
+
+  document.getElementById('snap-canvas').addEventListener('mouseup', () => { dragging = false; });
+
+  window.addEventListener('resize', () => { syncCanvas(); drawOverlay(); });
+
+  // ── Snapshot request ───────────────────────────────────────────────────────
+  async function requestSnapshot() {
+    setStatus('Requesting snapshot…');
+    document.getElementById('btn-snap-req').disabled = true;
+
+    const res = await fetch(`/api/units/${selectedId}/commands/snapshot`, { method: 'POST' });
+    if (res.status === 429) {
+      setStatus('Rate limit reached — max 10 snapshots per minute.');
+      document.getElementById('btn-snap-req').disabled = false;
+      return;
+    }
+
+    // Poll for the new snapshot arriving (compare timestamps)
+    clearSnapshotPoll();
+    const beforeTs = lastSnapshotTs;
+    snapshotPollTimer = setInterval(async () => {
+      await refreshDetail();
+      if (lastSnapshotTs !== beforeTs) {
+        clearSnapshotPoll();
+        setStatus('Snapshot received.');
+        document.getElementById('btn-snap-req').disabled = false;
+      }
+    }, 2000);
+
+    // Timeout after 30 s
+    setTimeout(() => {
+      if (snapshotPollTimer) {
+        clearSnapshotPoll();
+        setStatus('Snapshot timed out — unit may be offline.');
+        document.getElementById('btn-snap-req').disabled = false;
+      }
+    }, 30000);
+  }
+
+  function clearSnapshotPoll() {
+    if (snapshotPollTimer) { clearInterval(snapshotPollTimer); snapshotPollTimer = null; }
+  }
+
+  // ── Crop ──────────────────────────────────────────────────────────────────
+  async function applyCrop() {
+    if (!currentRect || currentRect.w < 10 || currentRect.h < 10) return;
+    const f = toFrame(currentRect);
+    await fetch(`/api/units/${selectedId}/commands/crop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(f),
+    });
+    savedCrop   = f;
+    currentRect = null;
+    drawOverlay();
+    setStatus(`Crop queued — will apply on next poll (x:${f.x} y:${f.y} w:${f.w} h:${f.h}).`);
+    document.getElementById('btn-crop-apply').disabled = true;
+    refreshDetail();
+  }
+
+  async function clearCrop() {
+    await fetch(`/api/units/${selectedId}/commands/crop`, { method: 'DELETE' });
+    savedCrop   = null;
+    currentRect = null;
+    drawOverlay();
+    setStatus('Clear crop queued — will apply on next poll.');
+    refreshDetail();
+  }
+
+  // ── Interval ───────────────────────────────────────────────────────────────
+  async function setInterval_(val) {
+    await fetch(`/api/units/${selectedId}/commands/interval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval: val }),
+    });
+    setStatus(`Interval change to ${val} queued — will apply on next poll.`);
+    refreshDetail();
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  async function triggerSnap() {
+    await fetch(`/api/units/${selectedId}/commands/snap`, { method: 'POST' });
+    setStatus('On-demand capture queued — will execute on next poll.');
+  }
+
+  async function stopUnit() {
+    if (!confirm(`Stop unit "${selectedId}"?`)) return;
+    await fetch(`/api/units/${selectedId}/commands/stop`, { method: 'POST' });
+    setStatus('Stop command queued.');
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function setStatus(msg) {
+    document.getElementById('snap-status').textContent = msg;
+  }
+
+  // ── Polling ────────────────────────────────────────────────────────────────
+  setInterval(loadUnits, 15000);          // Refresh sidebar every 15 s
+  setInterval(() => {                     // Refresh detail panel every 10 s
+    if (selectedId) refreshDetail();
+  }, 10000);
+
+  loadUnits();  // Initial load
+</script>
+</body>
+</html>
