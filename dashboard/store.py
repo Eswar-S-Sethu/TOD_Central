@@ -28,20 +28,21 @@ def register_unit(unit_id, location, config):
     with _lock:
         existing = _units.get(unit_id, {})
         _units[unit_id] = {
-            "id":              unit_id,
-            "location":        location,
-            "registered_at":   existing.get("registered_at", _now().isoformat()),
-            "last_seen":       _now().isoformat(),
-            "config":          config,
+            "id":               unit_id,
+            "location":         location,
+            "registered_at":    existing.get("registered_at", _now().isoformat()),
+            "last_seen":        _now().isoformat(),
+            "config":           config,
+            "health":           existing.get("health"),
             "pending_commands": existing.get("pending_commands", []),
-            "snapshot":        existing.get("snapshot"),
-            "_snap_times":     existing.get("_snap_times", []),
-            "dashboard_crop":  existing.get("dashboard_crop"),
+            "snapshot":         existing.get("snapshot"),
+            "_snap_times":      existing.get("_snap_times", []),
+            "dashboard_crop":   existing.get("dashboard_crop"),
         }
 
 
-def poll_unit(unit_id, config, location=None):
-    """Updates last_seen, config, and optionally location; returns and clears pending commands."""
+def poll_unit(unit_id, config, location=None, health=None):
+    """Updates last_seen, config, health, and optionally location; returns and clears pending commands."""
     with _lock:
         if unit_id not in _units:
             return []
@@ -50,6 +51,8 @@ def poll_unit(unit_id, config, location=None):
         unit["config"]    = config
         if location:
             unit["location"] = location
+        if health is not None:
+            unit["health"] = health
         commands = list(unit["pending_commands"])
         unit["pending_commands"] = []
         return commands
@@ -104,6 +107,7 @@ def get_unit(unit_id):
             "snapshot_height":       snap["height"]    if snap else None,
             "pending_commands_count": len(u["pending_commands"]),
             "crop":                  u.get("dashboard_crop"),
+            "health":                u.get("health"),
         }
 
 

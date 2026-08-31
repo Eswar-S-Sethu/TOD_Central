@@ -345,6 +345,18 @@
       </div>
     </div>
 
+    <!-- System Stats -->
+    <div class="section" id="health-section" style="display:none;">
+      <div class="section-title">System Stats</div>
+      <div class="info-row">
+        <div class="info-item"><label>CPU</label><span id="d-cpu">—</span></div>
+        <div class="info-item"><label>Memory</label><span id="d-mem">—</span></div>
+        <div class="info-item"><label>Disk</label><span id="d-disk">—</span></div>
+        <div class="info-item" id="d-temp-item" style="display:none;"><label>Temp</label><span id="d-temp">—</span></div>
+        <div class="info-item" id="d-batt-item" style="display:none;"><label>Battery</label><span id="d-batt">—</span></div>
+      </div>
+    </div>
+
     <!-- Snapshot + crop -->
     <div class="section">
       <div class="section-title">Snapshot &amp; Crop Setup</div>
@@ -488,6 +500,29 @@
     document.querySelectorAll('.interval-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.val === unit.config?.interval);
     });
+
+    // System stats
+    const health = unit.health;
+    const healthSection = document.getElementById('health-section');
+    if (health) {
+      healthSection.style.display = 'block';
+      document.getElementById('d-cpu').textContent  = health.cpu_percent  != null ? health.cpu_percent.toFixed(1)  + '%' : '—';
+      document.getElementById('d-mem').textContent  = health.memory_percent != null ? health.memory_percent.toFixed(1) + '%' : '—';
+      document.getElementById('d-disk').textContent = health.disk_percent != null ? health.disk_percent.toFixed(1) + '%' : '—';
+
+      const tempItem = document.getElementById('d-temp-item');
+      tempItem.style.display = health.temperature_celsius != null ? '' : 'none';
+      if (health.temperature_celsius != null)
+        document.getElementById('d-temp').textContent = health.temperature_celsius + '°C';
+
+      const battItem = document.getElementById('d-batt-item');
+      battItem.style.display = health.battery_percent != null ? '' : 'none';
+      if (health.battery_percent != null)
+        document.getElementById('d-batt').textContent =
+          health.battery_percent.toFixed(0) + '% · ' + (health.on_battery ? 'on battery' : 'plugged in');
+    } else {
+      healthSection.style.display = 'none';
+    }
 
     // Update saved crop and redraw crop preview if snapshot is already loaded
     savedCrop = crop;

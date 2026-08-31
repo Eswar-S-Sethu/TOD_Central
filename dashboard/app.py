@@ -19,7 +19,7 @@ def register():
 @app.route("/api/units/<unit_id>/poll", methods=["POST"])
 def poll(unit_id):
     d = request.get_json()
-    commands = store.poll_unit(unit_id, d.get("config", {}), d.get("location"))
+    commands = store.poll_unit(unit_id, d.get("config", {}), d.get("location"), d.get("health"))
     return jsonify({"commands": commands})
 
 
