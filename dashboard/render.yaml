@@ -3,5 +3,5 @@ services:
     name: tod-camunit-dashboard
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn --workers 1 --worker-class gthread --threads 4 --timeout 120 app:app
     plan: starter
