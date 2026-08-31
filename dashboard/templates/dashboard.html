@@ -342,6 +342,7 @@
         <div class="info-item"><label>Crop</label><span id="d-crop"></span></div>
         <div class="info-item"><label>Pending cmds</label><span id="d-pending"></span></div>
         <div class="info-item"><label>Last snapshot</label><span id="d-snap-info"></span></div>
+        <div class="info-item"><label>Mode</label><span id="d-mode"></span></div>
       </div>
     </div>
 
@@ -407,7 +408,8 @@
       <div class="section-title">Actions</div>
       <div class="btn-row">
         <button class="btn-secondary" onclick="triggerSnap()">Take Capture Now</button>
-        <button class="btn-danger"    onclick="stopUnit()">Stop Unit</button>
+        <button class="btn-secondary" id="btn-standby" onclick="setStandby()">Standby</button>
+        <button class="btn-primary"   id="btn-resume"  onclick="resumeUnit()">Resume</button>
       </div>
     </div>
 
@@ -496,6 +498,12 @@
     document.getElementById('d-snap-info').textContent = unit.has_snapshot
       ? `${unit.snapshot_width ?? '?'}×${unit.snapshot_height ?? '?'} · ${timeAgo(unit.snapshot_timestamp)}`
       : '—';
+
+    const inStandby = unit.standby || false;
+    document.getElementById('d-mode').textContent      = inStandby ? 'Standby' : 'Active';
+    document.getElementById('d-mode').style.color      = inStandby ? '#f80' : '#2a7';
+    document.getElementById('btn-standby').disabled    = inStandby;
+    document.getElementById('btn-resume').disabled     = !inStandby;
 
     document.querySelectorAll('.interval-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.val === unit.config?.interval);
@@ -753,10 +761,16 @@
     setStatus('On-demand capture queued — will execute on next poll.');
   }
 
-  async function stopUnit() {
-    if (!confirm(`Stop unit "${selectedId}"?`)) return;
-    await fetch(`/api/units/${selectedId}/commands/stop`, { method: 'POST' });
-    setStatus('Stop command queued.');
+  async function setStandby() {
+    await fetch(`/api/units/${selectedId}/commands/standby`, { method: 'POST' });
+    setStatus('Standby queued — captures will pause on next poll.');
+    refreshDetail();
+  }
+
+  async function resumeUnit() {
+    await fetch(`/api/units/${selectedId}/commands/resume`, { method: 'POST' });
+    setStatus('Resume queued — normal operation will resume on next poll.');
+    refreshDetail();
   }
 
   // ── Location editing ───────────────────────────────────────────────────────

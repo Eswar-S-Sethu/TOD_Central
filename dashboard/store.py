@@ -33,6 +33,7 @@ def register_unit(unit_id, location, config):
             "registered_at":    existing.get("registered_at", _now().isoformat()),
             "last_seen":        _now().isoformat(),
             "config":           config,
+            "standby":          existing.get("standby", False),
             "health":           existing.get("health"),
             "pending_commands": existing.get("pending_commands", []),
             "snapshot":         existing.get("snapshot"),
@@ -41,16 +42,18 @@ def register_unit(unit_id, location, config):
         }
 
 
-def poll_unit(unit_id, config, location=None, health=None):
-    """Updates last_seen, config, health, and optionally location; returns and clears pending commands."""
+def poll_unit(unit_id, config, location=None, standby=None, health=None):
+    """Updates last_seen, config, standby, health, and optionally location; returns and clears pending commands."""
     with _lock:
         if unit_id not in _units:
             return []
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
         unit["config"]    = config
-        if location:
+        if location is not None:
             unit["location"] = location
+        if standby is not None:
+            unit["standby"] = standby
         if health is not None:
             unit["health"] = health
         commands = list(unit["pending_commands"])
@@ -107,6 +110,7 @@ def get_unit(unit_id):
             "snapshot_height":       snap["height"]    if snap else None,
             "pending_commands_count": len(u["pending_commands"]),
             "crop":                  u.get("dashboard_crop"),
+            "standby":               u.get("standby", False),
             "health":                u.get("health"),
         }
 

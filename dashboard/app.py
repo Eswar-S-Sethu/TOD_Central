@@ -19,7 +19,13 @@ def register():
 @app.route("/api/units/<unit_id>/poll", methods=["POST"])
 def poll(unit_id):
     d = request.get_json()
-    commands = store.poll_unit(unit_id, d.get("config", {}), d.get("location"), d.get("health"))
+    commands = store.poll_unit(
+        unit_id,
+        d.get("config", {}),
+        d.get("location"),
+        d.get("standby"),
+        d.get("health"),
+    )
     return jsonify({"commands": commands})
 
 
@@ -113,9 +119,16 @@ def trigger_snap(unit_id):
     return jsonify({"status": "queued"})
 
 
-@app.route("/api/units/<unit_id>/commands/stop", methods=["POST"])
-def stop_unit(unit_id):
-    if not store.queue_command(unit_id, {"type": "stop"}):
+@app.route("/api/units/<unit_id>/commands/standby", methods=["POST"])
+def standby_unit(unit_id):
+    if not store.queue_command(unit_id, {"type": "set_standby"}):
+        abort(404)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/resume", methods=["POST"])
+def resume_unit(unit_id):
+    if not store.queue_command(unit_id, {"type": "resume"}):
         abort(404)
     return jsonify({"status": "queued"})
 
