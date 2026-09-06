@@ -35,6 +35,9 @@ def register_unit(unit_id, location, config):
             "config":           config,
             "standby":          existing.get("standby", False),
             "health":           existing.get("health"),
+            "network":          existing.get("network"),
+            "wifi_scan":        existing.get("wifi_scan"),
+            "wifi_connect":     existing.get("wifi_connect"),
             "pending_commands": existing.get("pending_commands", []),
             "snapshot":         existing.get("snapshot"),
             "_snap_times":      existing.get("_snap_times", []),
@@ -42,8 +45,8 @@ def register_unit(unit_id, location, config):
         }
 
 
-def poll_unit(unit_id, config, location=None, standby=None, health=None):
-    """Updates last_seen, config, standby, health, and optionally location; returns and clears pending commands."""
+def poll_unit(unit_id, config, location=None, standby=None, health=None, network=None):
+    """Updates last_seen, config, standby, health, network, and optionally location; returns and clears pending commands."""
     with _lock:
         if unit_id not in _units:
             return []
@@ -56,9 +59,33 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None):
             unit["standby"] = standby
         if health is not None:
             unit["health"] = health
+        if network is not None:
+            unit["network"] = network
         commands = list(unit["pending_commands"])
         unit["pending_commands"] = []
         return commands
+
+
+def store_wifi_scan(unit_id, networks):
+    with _lock:
+        if unit_id not in _units:
+            return
+        _units[unit_id]["wifi_scan"] = {
+            "networks":  networks,
+            "timestamp": _now().isoformat(),
+        }
+
+
+def store_wifi_connect_result(unit_id, ssid, success, message):
+    with _lock:
+        if unit_id not in _units:
+            return
+        _units[unit_id]["wifi_connect"] = {
+            "ssid":      ssid,
+            "success":   success,
+            "message":   message,
+            "timestamp": _now().isoformat(),
+        }
 
 
 def store_snapshot(unit_id, image_base64, width, height, timestamp):
@@ -112,6 +139,9 @@ def get_unit(unit_id):
             "crop":                  u.get("dashboard_crop"),
             "standby":               u.get("standby", False),
             "health":                u.get("health"),
+            "network":               u.get("network"),
+            "wifi_scan":             u.get("wifi_scan"),
+            "wifi_connect":          u.get("wifi_connect"),
         }
 
 

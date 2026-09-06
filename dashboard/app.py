@@ -25,6 +25,7 @@ def poll(unit_id):
         d.get("location"),
         d.get("standby"),
         d.get("health"),
+        d.get("network"),
     )
     return jsonify({"commands": commands})
 
@@ -33,6 +34,20 @@ def poll(unit_id):
 def receive_snapshot(unit_id):
     d = request.get_json()
     store.store_snapshot(unit_id, d["image_base64"], d.get("width"), d.get("height"), d.get("timestamp"))
+    return jsonify({"status": "received"})
+
+
+@app.route("/api/units/<unit_id>/wifi_scan", methods=["POST"])
+def receive_wifi_scan(unit_id):
+    d = request.get_json()
+    store.store_wifi_scan(unit_id, d.get("networks", []))
+    return jsonify({"status": "received"})
+
+
+@app.route("/api/units/<unit_id>/wifi_connect_result", methods=["POST"])
+def receive_wifi_connect_result(unit_id):
+    d = request.get_json()
+    store.store_wifi_connect_result(unit_id, d.get("ssid"), d.get("success"), d.get("message"))
     return jsonify({"status": "received"})
 
 
@@ -129,6 +144,24 @@ def standby_unit(unit_id):
 @app.route("/api/units/<unit_id>/commands/resume", methods=["POST"])
 def resume_unit(unit_id):
     if not store.queue_command(unit_id, {"type": "resume"}):
+        abort(404)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/wifi/scan", methods=["POST"])
+def request_wifi_scan(unit_id):
+    if not store.queue_command(unit_id, {"type": "wifi_scan"}):
+        abort(404)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/wifi/connect", methods=["POST"])
+def request_wifi_connect(unit_id):
+    d = request.get_json()
+    ssid = (d.get("ssid") or "").strip()
+    if not ssid:
+        return jsonify({"error": "ssid required"}), 400
+    if not store.queue_command(unit_id, {"type": "wifi_connect", "ssid": ssid, "password": d.get("password", "")}):
         abort(404)
     return jsonify({"status": "queued"})
 

@@ -295,6 +295,109 @@
       min-width: 200px;
     }
     #location-input:focus { outline: none; border-color: #2a7; }
+
+    /* ── WiFi network list ── */
+    .wifi-net-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px 0;
+      border-bottom: 1px solid #222;
+    }
+    .wifi-net-item:last-child { border-bottom: none; }
+
+    .wifi-net-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .wifi-net-signal {
+      font-family: monospace;
+      font-size: 0.82rem;
+      flex-shrink: 0;
+      letter-spacing: 1px;
+    }
+
+    .wifi-net-ssid {
+      flex: 1;
+      font-size: 0.88rem;
+      color: #eee;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wifi-net-lock {
+      font-size: 0.78rem;
+      color: #555;
+      flex-shrink: 0;
+      width: 16px;
+      text-align: center;
+    }
+
+    .wifi-password-row {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .wifi-password-row input {
+      background: #222;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #eee;
+      padding: 5px 10px;
+      font-size: 0.85rem;
+      flex: 1;
+      min-width: 120px;
+    }
+    .wifi-password-row input:focus { outline: none; border-color: #2a7; }
+
+    /* ── Mobile back button ── */
+    .btn-back {
+      display: none;
+      background: none;
+      border: none;
+      color: #2a7;
+      font-size: 0.85rem;
+      padding: 0;
+      cursor: pointer;
+      margin-bottom: 16px;
+      font-weight: 500;
+    }
+
+    /* ── Mobile layout ── */
+    @media (max-width: 640px) {
+      body { flex-direction: column; }
+
+      #sidebar {
+        width: 100%;
+        min-width: unset;
+        flex: 1;
+        border-right: none;
+      }
+
+      body.mobile-detail #sidebar { display: none; }
+
+      #main {
+        display: none;
+        padding: 16px;
+      }
+
+      body.mobile-detail #main { display: block; }
+
+      .btn-back { display: block; }
+
+      #snap-panels { flex-direction: column; }
+
+      .interval-options { flex-wrap: wrap; }
+
+      #location-input { min-width: 0; flex: 1; }
+
+      .section { padding: 14px; }
+    }
   </style>
 </head>
 <body>
@@ -313,6 +416,7 @@
   <div id="empty-state">Select a camera unit from the sidebar.</div>
 
   <div id="detail">
+    <button class="btn-back" onclick="showSidebar()">&#8592; Units</button>
 
     <!-- Header -->
     <div class="detail-header">
@@ -356,6 +460,21 @@
         <div class="info-item" id="d-temp-item" style="display:none;"><label>Temp</label><span id="d-temp">—</span></div>
         <div class="info-item" id="d-batt-item" style="display:none;"><label>Battery</label><span id="d-batt">—</span></div>
       </div>
+    </div>
+
+    <!-- Network -->
+    <div class="section" id="network-section" style="display:none;">
+      <div class="section-title">Network</div>
+      <div class="info-row">
+        <div class="info-item"><label>WiFi</label><span id="d-net-ssid">—</span></div>
+        <div class="info-item" id="d-net-ips-item"><label>IP Addresses</label><span id="d-net-ips">—</span></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn-secondary" id="btn-wifi-scan" onclick="requestWifiScan()">Scan Networks</button>
+      </div>
+      <div id="wifi-scan-status" style="font-size:0.8rem;color:#777;margin-top:8px;min-height:1.2em;"></div>
+      <div id="wifi-network-list" style="margin-top:4px;"></div>
+      <div id="wifi-connect-status" style="font-size:0.82rem;margin-top:8px;min-height:1.2em;"></div>
     </div>
 
     <!-- Snapshot + crop -->
@@ -423,6 +542,11 @@
   let snapshotPollTimer = null;   // interval timer while waiting for snapshot
   let currentRect       = null;   // rectangle drawn by user (canvas coords)
   let savedCrop         = null;   // confirmed crop region (frame coords)
+  let wifiScanTs           = null;
+  let wifiConnectTs        = null;
+  let wifiScanPollTimer    = null;
+  let wifiConnectPollTimer = null;
+  let _wifiNetworks        = [];
 
   // ── Unit list ──────────────────────────────────────────────────────────────
   async function loadUnits() {
@@ -462,8 +586,17 @@
     currentRect    = null;
     savedCrop      = null;
     clearSnapshotPoll();
+    clearWifiScanPoll();
+    clearWifiConnectPoll();
+    wifiScanTs    = null;
+    wifiConnectTs = null;
+    _wifiNetworks = [];
     resetCropPanel();
+    document.getElementById('wifi-network-list').innerHTML = '';
+    document.getElementById('wifi-scan-status').textContent = '';
+    document.getElementById('wifi-connect-status').textContent = '';
 
+    document.body.classList.add('mobile-detail');
     document.getElementById('empty-state').style.display = 'none';
     document.getElementById('detail').style.display      = 'block';
     loadUnits();
@@ -546,6 +679,38 @@
     const rem = unit.snapshot_requests_remaining ?? '?';
     document.getElementById('snap-requests-left').textContent =
       `Snapshot requests remaining this minute: ${rem}/10`;
+
+    // ── Network info ──────────────────────────────────────────────────────────
+    const network = unit.network;
+    const networkSection = document.getElementById('network-section');
+    if (network) {
+      networkSection.style.display = 'block';
+      document.getElementById('d-net-ssid').textContent = network.ssid || 'Not connected';
+      const ips   = network.ip_addresses || {};
+      const ipStr = Object.entries(ips).map(([iface, ip]) => `${ip} (${iface})`).join(' · ');
+      const ipsItem = document.getElementById('d-net-ips-item');
+      ipsItem.style.display = ipStr ? '' : 'none';
+      document.getElementById('d-net-ips').textContent = ipStr || '—';
+    } else {
+      networkSection.style.display = 'none';
+    }
+
+    // WiFi scan results (update only when timestamp changes)
+    const wifiScan = unit.wifi_scan;
+    if (wifiScan && wifiScan.timestamp !== wifiScanTs) {
+      wifiScanTs = wifiScan.timestamp;
+      document.getElementById('btn-wifi-scan').disabled = false;
+      renderWifiScan(wifiScan, network?.ssid ?? null);
+    }
+
+    // WiFi connect result (update only when timestamp changes)
+    const wifiConnect = unit.wifi_connect;
+    if (wifiConnect && wifiConnect.timestamp !== wifiConnectTs) {
+      wifiConnectTs = wifiConnect.timestamp;
+      const el = document.getElementById('wifi-connect-status');
+      el.style.color = wifiConnect.success ? '#2a7' : '#c44';
+      el.textContent = (wifiConnect.success ? '✓ ' : '✗ ') + wifiConnect.message;
+    }
   }
 
   // ── Full-frame snapshot display + crop overlay canvas ──────────────────────
@@ -680,6 +845,33 @@
 
   window.addEventListener('resize', () => { syncCanvas(); drawOverlay(); drawCroppedView(); });
 
+  // ── Canvas touch events (mobile) ───────────────────────────────────────────
+  (function() {
+    const cvs = document.getElementById('snap-canvas');
+    function touchPos(e) {
+      const r = cvs.getBoundingClientRect();
+      return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+    }
+    cvs.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const p = touchPos(e);
+      dragSx = p.x; dragSy = p.y;
+      dragging = true; currentRect = null;
+    }, { passive: false });
+    cvs.addEventListener('touchmove', e => {
+      e.preventDefault();
+      if (!dragging) return;
+      const p = touchPos(e);
+      currentRect = {
+        x: Math.min(dragSx, p.x), y: Math.min(dragSy, p.y),
+        w: Math.abs(p.x - dragSx), h: Math.abs(p.y - dragSy),
+      };
+      syncCanvas(); drawOverlay();
+      document.getElementById('btn-crop-apply').disabled = (currentRect.w < 10 || currentRect.h < 10);
+    }, { passive: false });
+    cvs.addEventListener('touchend', () => { dragging = false; });
+  })();
+
   // ── Snapshot request ───────────────────────────────────────────────────────
   async function requestSnapshot() {
     setStatus('Requesting snapshot…');
@@ -714,6 +906,125 @@
 
   function clearSnapshotPoll() {
     if (snapshotPollTimer) { clearInterval(snapshotPollTimer); snapshotPollTimer = null; }
+  }
+
+  // ── WiFi ───────────────────────────────────────────────────────────────────
+  async function requestWifiScan() {
+    document.getElementById('btn-wifi-scan').disabled = true;
+    document.getElementById('wifi-scan-status').textContent = 'Scan queued — waiting for unit to respond\u2026';
+    document.getElementById('wifi-network-list').innerHTML = '';
+    document.getElementById('wifi-connect-status').textContent = '';
+
+    await fetch(`/api/units/${selectedId}/commands/wifi/scan`, { method: 'POST' });
+
+    const beforeTs = wifiScanTs;
+    clearWifiScanPoll();
+    wifiScanPollTimer = setInterval(async () => {
+      await refreshDetail();
+      if (wifiScanTs !== beforeTs) clearWifiScanPoll();
+    }, 2000);
+
+    setTimeout(() => {
+      if (wifiScanPollTimer) {
+        clearWifiScanPoll();
+        document.getElementById('wifi-scan-status').textContent = 'Scan timed out \u2014 unit may be offline.';
+        document.getElementById('btn-wifi-scan').disabled = false;
+      }
+    }, 60000);
+  }
+
+  function clearWifiScanPoll() {
+    if (wifiScanPollTimer) { clearInterval(wifiScanPollTimer); wifiScanPollTimer = null; }
+  }
+
+  function renderWifiScan(wifiScan, currentSsid) {
+    _wifiNetworks = wifiScan.networks;
+    const list = document.getElementById('wifi-network-list');
+    if (!_wifiNetworks.length) {
+      list.innerHTML = '<p style="color:#555;font-size:0.85rem;padding:8px 0;">No networks found.</p>';
+      document.getElementById('wifi-scan-status').textContent = 'Scan complete \u2014 no networks found.';
+      return;
+    }
+    document.getElementById('wifi-scan-status').textContent =
+      `${_wifiNetworks.length} network(s) found \u00b7 scanned ${timeAgo(wifiScan.timestamp)}`;
+    list.innerHTML = _wifiNetworks.map((n, i) => {
+      const bars     = signalBars(n.signal);
+      const barColor = signalColor(n.signal);
+      const connected = n.ssid === currentSsid;
+      const lock = n.secured ? '\uD83D\uDD12' : '';
+      return `
+        <div class="wifi-net-item">
+          <div class="wifi-net-row">
+            <span class="wifi-net-signal" style="color:${barColor}">${bars}</span>
+            <span class="wifi-net-ssid" title="${escHtml(n.ssid)}">${escHtml(n.ssid)}</span>
+            <span class="wifi-net-lock">${lock}</span>
+            ${connected
+              ? '<span style="font-size:0.78rem;color:#2a7;font-weight:600;">Connected</span>'
+              : `<button class="btn-secondary" style="padding:4px 10px;font-size:0.78rem;" onclick="showWifiPasswordRow(${i})">Connect</button>`
+            }
+          </div>
+          ${!connected ? `
+          <div class="wifi-password-row" id="wifi-pw-${i}">
+            ${n.secured
+              ? `<input type="password" id="wifi-pw-input-${i}" placeholder="Password"
+                        onkeydown="if(event.key==='Enter')doWifiConnect(${i});if(event.key==='Escape')hideWifiPasswordRow(${i});">`
+              : ''
+            }
+            <button class="btn-primary" style="padding:4px 10px;font-size:0.78rem;" onclick="doWifiConnect(${i})">Connect</button>
+            <button class="btn-secondary" style="padding:4px 10px;font-size:0.78rem;" onclick="hideWifiPasswordRow(${i})">Cancel</button>
+          </div>
+          ` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  function showWifiPasswordRow(i) {
+    const row = document.getElementById('wifi-pw-' + i);
+    if (row) {
+      row.style.display = 'flex';
+      const inp = document.getElementById('wifi-pw-input-' + i);
+      if (inp) inp.focus();
+    }
+  }
+
+  function hideWifiPasswordRow(i) {
+    const row = document.getElementById('wifi-pw-' + i);
+    if (row) row.style.display = 'none';
+  }
+
+  async function doWifiConnect(i) {
+    const n        = _wifiNetworks[i];
+    const inp      = document.getElementById('wifi-pw-input-' + i);
+    const password = inp ? inp.value : '';
+
+    hideWifiPasswordRow(i);
+    const statusEl = document.getElementById('wifi-connect-status');
+    statusEl.style.color = '#777';
+    statusEl.textContent = `Connecting to '${escHtml(n.ssid)}'\u2026 (may take up to 40s)`;
+
+    await fetch(`/api/units/${selectedId}/commands/wifi/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid: n.ssid, password }),
+    });
+
+    const beforeTs = wifiConnectTs;
+    clearWifiConnectPoll();
+    wifiConnectPollTimer = setInterval(async () => {
+      await refreshDetail();
+      if (wifiConnectTs !== beforeTs) clearWifiConnectPoll();
+    }, 2000);
+
+    setTimeout(() => {
+      if (wifiConnectPollTimer) {
+        clearWifiConnectPoll();
+        statusEl.textContent = 'No response \u2014 unit may have switched networks.';
+      }
+    }, 60000);
+  }
+
+  function clearWifiConnectPoll() {
+    if (wifiConnectPollTimer) { clearInterval(wifiConnectPollTimer); wifiConnectPollTimer = null; }
   }
 
   // ── Crop ──────────────────────────────────────────────────────────────────
@@ -785,6 +1096,16 @@
     document.getElementById('location-edit').style.display = 'none';
   }
 
+  function showSidebar() {
+    document.body.classList.remove('mobile-detail');
+    selectedId = null;
+    clearSnapshotPoll();
+    clearWifiScanPoll();
+    clearWifiConnectPoll();
+    document.getElementById('detail').style.display      = 'none';
+    document.getElementById('empty-state').style.display = '';
+  }
+
   async function saveLocation() {
     const name = document.getElementById('location-input').value.trim();
     if (!name) return;
@@ -805,6 +1126,23 @@
   // ── Helpers ────────────────────────────────────────────────────────────────
   function setStatus(msg) {
     document.getElementById('snap-status').textContent = msg;
+  }
+
+  function signalBars(pct) {
+    const filled = Math.min(4, Math.round(pct / 25));
+    return '\u2582\u2584\u2586\u2588'.slice(0, filled) + '\u2591'.repeat(4 - filled);
+  }
+
+  function signalColor(pct) {
+    if (pct >= 70) return '#2a7';
+    if (pct >= 40) return '#f80';
+    return '#c44';
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   // ── Polling ────────────────────────────────────────────────────────────────
