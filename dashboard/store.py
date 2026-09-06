@@ -49,7 +49,24 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
     """Updates last_seen, config, standby, health, network, and optionally location; returns and clears pending commands."""
     with _lock:
         if unit_id not in _units:
-            return []
+            # Auto-register using poll data — handles server restarts where
+            # in-memory state is lost but the camera unit is still running.
+            _units[unit_id] = {
+                "id":               unit_id,
+                "location":         location or unit_id,
+                "registered_at":    _now().isoformat(),
+                "last_seen":        _now().isoformat(),
+                "config":           config,
+                "standby":          standby or False,
+                "health":           health,
+                "network":          network,
+                "wifi_scan":        None,
+                "wifi_connect":     None,
+                "pending_commands": [],
+                "snapshot":         None,
+                "_snap_times":      [],
+                "dashboard_crop":   None,
+            }
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
         unit["config"]    = config
