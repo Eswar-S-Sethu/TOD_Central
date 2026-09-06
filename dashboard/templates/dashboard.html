@@ -296,6 +296,86 @@
     }
     #location-input:focus { outline: none; border-color: #2a7; }
 
+    /* ── WiFi modal ── */
+    #wifi-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #wifi-modal-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+    }
+
+    #wifi-modal-box {
+      position: relative;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 10px;
+      width: 440px;
+      max-width: calc(100vw - 32px);
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #wifi-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #eee;
+      flex-shrink: 0;
+    }
+
+    #wifi-modal-close {
+      background: none;
+      border: none;
+      color: #555;
+      font-size: 1rem;
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    #wifi-modal-close:hover { color: #ccc; background: #2a2a2a; }
+
+    #wifi-scan-status {
+      padding: 10px 18px;
+      font-size: 0.8rem;
+      color: #777;
+      min-height: 2.4em;
+      flex-shrink: 0;
+    }
+
+    #wifi-network-list {
+      overflow-y: auto;
+      flex: 1;
+      padding: 0 8px;
+    }
+
+    #wifi-connect-status {
+      padding: 6px 18px 10px;
+      font-size: 0.82rem;
+      min-height: 2em;
+      flex-shrink: 0;
+    }
+
+    #wifi-modal-footer {
+      padding: 12px 18px;
+      border-top: 1px solid #2a2a2a;
+      flex-shrink: 0;
+    }
+
     /* ── WiFi network list ── */
     .wifi-net-item {
       display: flex;
@@ -397,6 +477,14 @@
       #location-input { min-width: 0; flex: 1; }
 
       .section { padding: 14px; }
+
+      #wifi-modal { align-items: flex-end; }
+      #wifi-modal-box {
+        width: 100%;
+        max-width: 100%;
+        max-height: 85vh;
+        border-radius: 14px 14px 0 0;
+      }
     }
   </style>
 </head>
@@ -472,9 +560,6 @@
       <div class="btn-row">
         <button class="btn-secondary" id="btn-wifi-scan" onclick="requestWifiScan()">Scan Networks</button>
       </div>
-      <div id="wifi-scan-status" style="font-size:0.8rem;color:#777;margin-top:8px;min-height:1.2em;"></div>
-      <div id="wifi-network-list" style="margin-top:4px;"></div>
-      <div id="wifi-connect-status" style="font-size:0.82rem;margin-top:8px;min-height:1.2em;"></div>
     </div>
 
     <!-- Snapshot + crop -->
@@ -535,6 +620,23 @@
   </div><!-- #detail -->
 </main>
 
+<!-- ── WiFi modal ──────────────────────────────────────────────────────────── -->
+<div id="wifi-modal" style="display:none;" role="dialog" aria-modal="true">
+  <div id="wifi-modal-overlay" onclick="closeWifiModal()"></div>
+  <div id="wifi-modal-box">
+    <div id="wifi-modal-header">
+      <span>Available Networks</span>
+      <button id="wifi-modal-close" onclick="closeWifiModal()">&#x2715;</button>
+    </div>
+    <div id="wifi-scan-status"></div>
+    <div id="wifi-network-list"></div>
+    <div id="wifi-connect-status"></div>
+    <div id="wifi-modal-footer">
+      <button class="btn-secondary" id="btn-wifi-scan-again" onclick="requestWifiScan()">Scan Again</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
   let selectedId        = null;
@@ -588,6 +690,7 @@
     clearSnapshotPoll();
     clearWifiScanPoll();
     clearWifiConnectPoll();
+    closeWifiModal();
     wifiScanTs    = null;
     wifiConnectTs = null;
     _wifiNetworks = [];
@@ -682,9 +785,8 @@
 
     // ── Network info ──────────────────────────────────────────────────────────
     const network = unit.network;
-    const networkSection = document.getElementById('network-section');
+    document.getElementById('network-section').style.display = 'block';
     if (network) {
-      networkSection.style.display = 'block';
       document.getElementById('d-net-ssid').textContent = network.ssid || 'Not connected';
       const ips   = network.ip_addresses || {};
       const ipStr = Object.entries(ips).map(([iface, ip]) => `${ip} (${iface})`).join(' · ');
@@ -692,7 +794,8 @@
       ipsItem.style.display = ipStr ? '' : 'none';
       document.getElementById('d-net-ips').textContent = ipStr || '—';
     } else {
-      networkSection.style.display = 'none';
+      document.getElementById('d-net-ssid').textContent = '—';
+      document.getElementById('d-net-ips-item').style.display = 'none';
     }
 
     // WiFi scan results (update only when timestamp changes)
@@ -700,6 +803,7 @@
     if (wifiScan && wifiScan.timestamp !== wifiScanTs) {
       wifiScanTs = wifiScan.timestamp;
       document.getElementById('btn-wifi-scan').disabled = false;
+      document.getElementById('btn-wifi-scan-again').disabled = false;
       renderWifiScan(wifiScan, network?.ssid ?? null);
     }
 
@@ -914,6 +1018,8 @@
     document.getElementById('wifi-scan-status').textContent = 'Scan queued — waiting for unit to respond\u2026';
     document.getElementById('wifi-network-list').innerHTML = '';
     document.getElementById('wifi-connect-status').textContent = '';
+    document.getElementById('btn-wifi-scan-again').disabled = true;
+    openWifiModal();
 
     await fetch(`/api/units/${selectedId}/commands/wifi/scan`, { method: 'POST' });
 
@@ -929,8 +1035,17 @@
         clearWifiScanPoll();
         document.getElementById('wifi-scan-status').textContent = 'Scan timed out \u2014 unit may be offline.';
         document.getElementById('btn-wifi-scan').disabled = false;
+        document.getElementById('btn-wifi-scan-again').disabled = false;
       }
     }, 60000);
+  }
+
+  function openWifiModal() {
+    document.getElementById('wifi-modal').style.display = 'flex';
+  }
+
+  function closeWifiModal() {
+    document.getElementById('wifi-modal').style.display = 'none';
   }
 
   function clearWifiScanPoll() {
@@ -1102,6 +1217,7 @@
     clearSnapshotPoll();
     clearWifiScanPoll();
     clearWifiConnectPoll();
+    closeWifiModal();
     document.getElementById('detail').style.display      = 'none';
     document.getElementById('empty-state').style.display = '';
   }
@@ -1144,6 +1260,8 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeWifiModal(); });
 
   // ── Polling ────────────────────────────────────────────────────────────────
   setInterval(loadUnits, 15000);
