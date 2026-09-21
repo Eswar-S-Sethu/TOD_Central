@@ -42,10 +42,13 @@ def register_unit(unit_id, location, config):
             "snapshot":         existing.get("snapshot"),
             "_snap_times":      existing.get("_snap_times", []),
             "dashboard_crop":   existing.get("dashboard_crop"),
+            "op_hours":         existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
+            "location_lat":     existing.get("location_lat"),
+            "location_lon":     existing.get("location_lon"),
         }
 
 
-def poll_unit(unit_id, config, location=None, standby=None, health=None, network=None):
+def poll_unit(unit_id, config, location=None, standby=None, health=None, network=None, op_hours=None):
     """Updates last_seen, config, standby, health, network, and optionally location; returns and clears pending commands."""
     with _lock:
         if unit_id not in _units:
@@ -66,6 +69,9 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
                 "snapshot":         None,
                 "_snap_times":      [],
                 "dashboard_crop":   None,
+                "op_hours":         {"start": "08:00", "end": "17:00"},
+                "location_lat":     None,
+                "location_lon":     None,
             }
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
@@ -78,6 +84,8 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
             unit["health"] = health
         if network is not None:
             unit["network"] = network
+        if op_hours is not None:
+            unit["op_hours"] = op_hours
         commands = list(unit["pending_commands"])
         unit["pending_commands"] = []
         return commands
@@ -159,6 +167,9 @@ def get_unit(unit_id):
             "network":               u.get("network"),
             "wifi_scan":             u.get("wifi_scan"),
             "wifi_connect":          u.get("wifi_connect"),
+            "op_hours":              u.get("op_hours", {"start": "08:00", "end": "17:00"}),
+            "location_lat":          u.get("location_lat"),
+            "location_lon":          u.get("location_lon"),
         }
 
 
@@ -168,11 +179,23 @@ def get_snapshot(unit_id):
         return dict(u["snapshot"]) if u and u.get("snapshot") else None
 
 
-def set_unit_location(unit_id, location):
+def set_unit_location(unit_id, location, lat=None, lon=None):
     with _lock:
         if unit_id not in _units:
             return False
         _units[unit_id]["location"] = location
+        if lat is not None:
+            _units[unit_id]["location_lat"] = lat
+        if lon is not None:
+            _units[unit_id]["location_lon"] = lon
+        return True
+
+
+def set_unit_op_hours(unit_id, start, end):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["op_hours"] = {"start": start, "end": end}
         return True
 
 

@@ -517,6 +517,10 @@
         <div id="location-edit">
           <input id="location-input" type="text" placeholder="Location name"
                  onkeydown="if(event.key==='Enter')saveLocation();if(event.key==='Escape')cancelEditLocation();">
+          <input id="lat-input" type="number" step="any" placeholder="Latitude"
+                 style="width:110px;background:#222;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:0.85rem;">
+          <input id="lon-input" type="number" step="any" placeholder="Longitude"
+                 style="width:110px;background:#222;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:0.85rem;">
           <button class="btn-primary" style="padding:5px 12px;font-size:0.82rem;" onclick="saveLocation()">Save</button>
           <button class="btn-secondary" style="padding:5px 12px;font-size:0.82rem;" onclick="cancelEditLocation()">Cancel</button>
         </div>
@@ -594,6 +598,23 @@
         <button class="btn-primary"   id="btn-snap-req"   onclick="requestSnapshot()">Request Snapshot</button>
         <button class="btn-secondary" id="btn-crop-apply" onclick="applyCrop()" disabled>Apply Crop</button>
         <button class="btn-secondary" id="btn-crop-clear" onclick="clearCrop()">Clear Crop</button>
+      </div>
+    </div>
+
+    <!-- Operational Hours -->
+    <div class="section">
+      <div class="section-title">Operational Hours</div>
+      <div class="info-row" style="margin-bottom:12px;">
+        <div class="info-item"><label>Current</label><span id="d-op-hours">—</span></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:0.85rem;color:#888;">Start</label>
+        <input type="time" id="op-start-input"
+               style="background:#222;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:0.85rem;">
+        <label style="font-size:0.85rem;color:#888;">End</label>
+        <input type="time" id="op-end-input"
+               style="background:#222;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:0.85rem;">
+        <button class="btn-primary" onclick="setOperationalHours()">Set Hours</button>
       </div>
     </div>
 
@@ -797,6 +818,20 @@
       document.getElementById('d-net-ssid').textContent = '—';
       document.getElementById('d-net-ips-item').style.display = 'none';
     }
+
+    // Operational hours
+    const op = unit.op_hours || {start: '08:00', end: '17:00'};
+    document.getElementById('d-op-hours').textContent = `${op.start} – ${op.end}`;
+    if (document.activeElement.id !== 'op-start-input')
+      document.getElementById('op-start-input').value = op.start;
+    if (document.activeElement.id !== 'op-end-input')
+      document.getElementById('op-end-input').value = op.end;
+
+    // Location coordinates (pre-fill edit form if not actively editing)
+    if (document.activeElement.id !== 'lat-input')
+      document.getElementById('lat-input').value = unit.location_lat ?? '';
+    if (document.activeElement.id !== 'lon-input')
+      document.getElementById('lon-input').value = unit.location_lon ?? '';
 
     // WiFi scan results (update only when timestamp changes)
     const wifiScan = unit.wifi_scan;
@@ -1225,13 +1260,32 @@
   async function saveLocation() {
     const name = document.getElementById('location-input').value.trim();
     if (!name) return;
+    const latVal = parseFloat(document.getElementById('lat-input').value);
+    const lonVal = parseFloat(document.getElementById('lon-input').value);
     await fetch(`/api/units/${selectedId}/commands/location`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ location: name }),
+      body: JSON.stringify({
+        location: name,
+        lat: isNaN(latVal) ? null : latVal,
+        lon: isNaN(lonVal) ? null : lonVal,
+      }),
     });
     cancelEditLocation();
     setStatus(`Location "${name}" queued — applies on next poll, persists across restarts.`);
+    refreshDetail();
+  }
+
+  async function setOperationalHours() {
+    const start = document.getElementById('op-start-input').value;
+    const end   = document.getElementById('op-end-input').value;
+    if (!start || !end) return;
+    await fetch(`/api/units/${selectedId}/commands/operational-hours`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end }),
+    });
+    setStatus(`Operational hours ${start}–${end} queued — applies on next poll, persists across restarts.`);
     refreshDetail();
   }
 

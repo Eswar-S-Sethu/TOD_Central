@@ -1,4 +1,5 @@
 import base64
+import re
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
@@ -26,6 +27,7 @@ def poll(unit_id):
         d.get("standby"),
         d.get("health"),
         d.get("network"),
+        d.get("op_hours"),
     )
     return jsonify({"commands": commands})
 
@@ -119,11 +121,26 @@ def set_interval(unit_id):
 def set_location(unit_id):
     d = request.get_json()
     location = (d.get("location") or "").strip()
+    lat = d.get("lat")
+    lon = d.get("lon")
     if not location:
         return jsonify({"error": "location must not be empty"}), 400
-    if not store.queue_command(unit_id, {"type": "set_location", "location": location}):
+    if not store.queue_command(unit_id, {"type": "set_location", "location": location, "lat": lat, "lon": lon}):
         abort(404)
-    store.set_unit_location(unit_id, location)
+    store.set_unit_location(unit_id, location, lat, lon)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/operational-hours", methods=["POST"])
+def set_operational_hours(unit_id):
+    d     = request.get_json()
+    start = (d.get("start") or "").strip()
+    end   = (d.get("end")   or "").strip()
+    if not (re.match(r'^\d{2}:\d{2}$', start) and re.match(r'^\d{2}:\d{2}$', end)):
+        return jsonify({"error": "start and end must be HH:MM format"}), 400
+    if not store.queue_command(unit_id, {"type": "set_operational_hours", "start": start, "end": end}):
+        abort(404)
+    store.set_unit_op_hours(unit_id, start, end)
     return jsonify({"status": "queued"})
 
 
