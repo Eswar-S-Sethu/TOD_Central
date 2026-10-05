@@ -115,6 +115,8 @@ def set_grid(unit_id):
         "col_widths":  d["col_widths"],
         "row_heights": d["row_heights"],
     }
+    if d.get("corners"):
+        grid["corners"] = d["corners"]
     if not store.queue_command(unit_id, {"type": "set_grid", "data": grid}):
         abort(404)
     store.set_unit_grid(unit_id, grid)
@@ -163,6 +165,16 @@ def set_operational_hours(unit_id):
         abort(404)
     store.set_unit_op_hours(unit_id, start, end)
     return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/debug-copy", methods=["POST"])
+def set_debug_copy(unit_id):
+    d = request.get_json()
+    enabled = bool(d.get("enabled", False))
+    if not store.queue_command(unit_id, {"type": "set_debug_copy", "enabled": enabled}):
+        abort(404)
+    store.set_unit_debug_copy(unit_id, enabled)
+    return jsonify({"status": "queued", "enabled": enabled})
 
 
 @app.route("/api/units/<unit_id>/commands/snap", methods=["POST"])

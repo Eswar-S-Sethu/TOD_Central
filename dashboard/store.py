@@ -42,8 +42,9 @@ def register_unit(unit_id, location, config):
             "snapshot":         existing.get("snapshot"),
             "_snap_times":      existing.get("_snap_times", []),
             "dashboard_crop":   existing.get("dashboard_crop"),
-            "dashboard_grid":   existing.get("dashboard_grid"),
-            "op_hours":         existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
+            "dashboard_grid":       existing.get("dashboard_grid"),
+            "dashboard_debug_copy": existing.get("dashboard_debug_copy", False),
+            "op_hours":             existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
         }
 
 
@@ -68,8 +69,9 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
                 "snapshot":         None,
                 "_snap_times":      [],
                 "dashboard_crop":   None,
-                "dashboard_grid":   None,
-                "op_hours":         {"start": "08:00", "end": "17:00"},
+                "dashboard_grid":       None,
+                "dashboard_debug_copy": False,
+                "op_hours":             {"start": "08:00", "end": "17:00"},
             }
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
@@ -161,6 +163,7 @@ def get_unit(unit_id):
             "pending_commands_count": len(u["pending_commands"]),
             "crop":                  u.get("dashboard_crop"),
             "grid":                  u.get("dashboard_grid"),
+            "debug_copy":            u.get("dashboard_debug_copy", False),
             "standby":               u.get("standby", False),
             "health":                u.get("health"),
             "network":               u.get("network"),
@@ -221,6 +224,14 @@ def clear_unit_grid(unit_id):
         if unit_id not in _units:
             return False
         _units[unit_id]["dashboard_grid"] = None
+        return True
+
+
+def set_unit_debug_copy(unit_id, enabled):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["dashboard_debug_copy"] = bool(enabled)
         return True
 
 

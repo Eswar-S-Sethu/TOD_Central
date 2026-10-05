@@ -244,6 +244,55 @@
       text-align: center;
     }
 
+    /* ── Toggle switch ── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .toggle-label {
+      font-size: 0.85rem;
+      color: #ccc;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input { display: none; }
+
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: #333;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      left: 3px; top: 3px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #888;
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .toggle-switch input:checked + .toggle-track { background: #1a4a2a; }
+    .toggle-switch input:checked + .toggle-track::after { transform: translateX(18px); background: #2a7; }
+
+    .toggle-note {
+      font-size: 0.75rem;
+      color: #555;
+      margin-top: 6px;
+    }
+
     /* ── Buttons ── */
     .btn-row {
       display: flex;
@@ -660,7 +709,7 @@
         <button class="btn-primary"   onclick="applyGrid()">Set Grid</button>
         <button class="btn-secondary" onclick="clearGridCmd()">Clear Grid</button>
       </div>
-      <p style="font-size:0.75rem;color:#555;margin-top:8px;">Drag the cyan lines to resize rows and columns. Cell indices (row,col) are shown inside each cell.</p>
+      <p style="font-size:0.75rem;color:#555;margin-top:8px;">Drag the <span style="color:#ffb800">amber corner handles</span> to skew/shear the grid to fit the camera angle. Drag the <span style="color:#00c8ff">cyan handles</span> to resize rows and columns.</p>
     </div>
 
     <!-- Operational Hours -->
@@ -700,6 +749,19 @@
       </div>
     </div>
 
+    <!-- Debug -->
+    <div class="section">
+      <div class="section-title">Debug</div>
+      <div class="toggle-row">
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-debug-copy" onchange="setDebugCopy(this.checked)">
+          <span class="toggle-track"></span>
+        </label>
+        <span class="toggle-label">Save Prediction Copy</span>
+      </div>
+      <p class="toggle-note">When on, every JSON uploaded to GCS is also saved to <code>Prediction_Data_Copy/</code> on the unit for local inspection.</p>
+    </div>
+
   </div><!-- #detail -->
 </main>
 
@@ -727,13 +789,15 @@
   let snapshotPollTimer = null;   // interval timer while waiting for snapshot
   let currentRect       = null;   // rectangle drawn by user (canvas coords)
   let savedCrop         = null;   // confirmed crop region (frame coords)
-  let gridRows          = 3;
-  let gridCols          = 4;
-  let colDividers       = [];     // internal col divider fractions, e.g. [0.25, 0.50, 0.75]
-  let rowDividers       = [];     // internal row divider fractions, e.g. [0.333, 0.667]
-  let gridDragging      = null;   // {type:'col'|'row', index}
-  let gridInitialized   = false;  // true after first grid init for selected unit
-  const GRID_HIT_RADIUS = 8;
+  let gridRows            = 3;
+  let gridCols            = 4;
+  let colDividers         = [];     // internal col divider fractions, e.g. [0.25, 0.50, 0.75]
+  let rowDividers         = [];     // internal row divider fractions, e.g. [0.333, 0.667]
+  let gridCorners         = { tl:[0,0], tr:[1,0], bl:[0,1], br:[1,1] }; // normalised [0,1] quad
+  let gridDragging        = null;   // {type:'col'|'row', index} or {type:'corner', key}
+  let gridInitialized     = false;  // true after first grid init for selected unit
+  const GRID_HIT_RADIUS   = 8;
+  const GRID_CORNER_RADIUS = 10;
   let wifiScanTs           = null;
   let wifiConnectTs        = null;
   let wifiScanPollTimer    = null;
@@ -832,6 +896,8 @@
     document.getElementById('d-mode').textContent      = inStandby ? 'Standby' : 'Active';
     document.getElementById('d-mode').style.color      = inStandby ? '#f80' : '#2a7';
     document.getElementById('btn-standby').disabled    = inStandby;
+
+    document.getElementById('toggle-debug-copy').checked = unit.debug_copy || unit.config?.debug_copy || false;
     document.getElementById('btn-resume').disabled     = !inStandby;
 
     document.querySelectorAll('.interval-btn').forEach(b => {
@@ -886,6 +952,11 @@
           acc += grid.row_heights[i];
           rowDividers.push(acc);
         }
+        // Restore corners if saved, else fall back to a full-canvas rectangle
+        const gc = grid.corners;
+        gridCorners = gc
+          ? { tl: gc.tl, tr: gc.tr, bl: gc.bl, br: gc.br }
+          : { tl:[0,0], tr:[1,0], bl:[0,1], br:[1,1] };
       } else {
         gridRows = parseInt(document.getElementById('grid-rows-input').value) || 3;
         gridCols = parseInt(document.getElementById('grid-cols-input').value) || 4;
@@ -893,6 +964,7 @@
         for (let i = 1; i < gridCols; i++) colDividers.push(i / gridCols);
         rowDividers = [];
         for (let i = 1; i < gridRows; i++) rowDividers.push(i / gridRows);
+        gridCorners = { tl:[0,0], tr:[1,0], bl:[0,1], br:[1,1] };
       }
       gridInitialized = true;
       if (img.naturalWidth) drawGrid();
@@ -1057,6 +1129,16 @@
 
   // ── Grid editor ────────────────────────────────────────────────────────────
 
+  // Bilinear map: (s,t) in [0,1]² → canvas pixel {x,y}
+  // Corners are stored as normalised [0,1] fractions; multiply by W/H for pixels.
+  function _gridBilinear(s, t, W, H) {
+    const c = gridCorners;
+    return {
+      x: ((1-s)*(1-t)*c.tl[0] + s*(1-t)*c.tr[0] + (1-s)*t*c.bl[0] + s*t*c.br[0]) * W,
+      y: ((1-s)*(1-t)*c.tl[1] + s*(1-t)*c.tr[1] + (1-s)*t*c.bl[1] + s*t*c.br[1]) * H,
+    };
+  }
+
   function drawGrid() {
     const canvas      = document.getElementById('grid-canvas');
     const placeholder = document.getElementById('grid-placeholder');
@@ -1081,39 +1163,58 @@
     // Background: draw the cropped region of the snapshot
     ctx.drawImage(img, savedCrop.x, savedCrop.y, savedCrop.w, savedCrop.h, 0, 0, W, H);
 
-    // Grid lines
     ctx.strokeStyle = '#00c8ff';
     ctx.lineWidth   = 1;
-    for (const d of colDividers) {
-      const x = d * W;
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    for (const d of rowDividers) {
-      const y = d * H;
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+
+    // Outer border (quad boundary)
+    const tl = _gridBilinear(0, 0, W, H), tr = _gridBilinear(1, 0, W, H);
+    const br = _gridBilinear(1, 1, W, H), bl = _gridBilinear(0, 1, W, H);
+    ctx.beginPath();
+    ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y);
+    ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y);
+    ctx.closePath(); ctx.stroke();
+
+    // Internal column lines
+    for (const s of colDividers) {
+      const p0 = _gridBilinear(s, 0, W, H), p1 = _gridBilinear(s, 1, W, H);
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
     }
 
-    // Drag handles — circles at divider midpoints
-    ctx.fillStyle = '#00c8ff';
-    for (const d of colDividers) {
-      ctx.beginPath(); ctx.arc(d * W, H / 2, 5, 0, Math.PI * 2); ctx.fill();
+    // Internal row lines
+    for (const t of rowDividers) {
+      const p0 = _gridBilinear(0, t, W, H), p1 = _gridBilinear(1, t, W, H);
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
     }
-    for (const d of rowDividers) {
-      ctx.beginPath(); ctx.arc(W / 2, d * H, 5, 0, Math.PI * 2); ctx.fill();
+
+    // Corner handles — amber, larger
+    ctx.fillStyle = '#ffb800';
+    for (const [s, t] of [[0,0],[1,0],[0,1],[1,1]]) {
+      const p = _gridBilinear(s, t, W, H);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Divider handles — cyan, at line midpoints
+    ctx.fillStyle = '#00c8ff';
+    for (const s of colDividers) {
+      const p = _gridBilinear(s, 0.5, W, H);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill();
+    }
+    for (const t of rowDividers) {
+      const p = _gridBilinear(0.5, t, W, H);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill();
     }
 
     // Cell index labels
-    ctx.fillStyle     = 'rgba(0,200,255,0.55)';
-    ctx.font          = '10px system-ui';
-    ctx.textAlign     = 'center';
-    ctx.textBaseline  = 'middle';
+    ctx.fillStyle    = 'rgba(0,200,255,0.55)';
+    ctx.font         = '10px system-ui';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
     const colB = [0, ...colDividers, 1];
     const rowB = [0, ...rowDividers, 1];
     for (let r = 0; r < gridRows; r++) {
       for (let c = 0; c < gridCols; c++) {
-        const x = ((colB[c] + colB[c + 1]) / 2) * W;
-        const y = ((rowB[r] + rowB[r + 1]) / 2) * H;
-        ctx.fillText(`${r},${c}`, x, y);
+        const p = _gridBilinear((colB[c] + colB[c+1]) / 2, (rowB[r] + rowB[r+1]) / 2, W, H);
+        ctx.fillText(`${r},${c}`, p.x, p.y);
       }
     }
   }
@@ -1132,6 +1233,7 @@
     const cols = Math.max(1, Math.min(10, parseInt(document.getElementById('grid-cols-input').value) || 4));
     document.getElementById('grid-rows-input').value = rows;
     document.getElementById('grid-cols-input').value = cols;
+    gridCorners = { tl:[0,0], tr:[1,0], bl:[0,1], br:[1,1] };
     initGridDividers(rows, cols);
   }
 
@@ -1147,14 +1249,29 @@
   function _gridHitTest(px, py) {
     const canvas = document.getElementById('grid-canvas');
     const W = canvas.width, H = canvas.height;
+
+    // Corners checked first (higher priority, larger radius)
+    const cornerDefs = [['tl',0,0],['tr',1,0],['bl',0,1],['br',1,1]];
+    for (const [key, s, t] of cornerDefs) {
+      const p = _gridBilinear(s, t, W, H);
+      if (Math.hypot(p.x - px, p.y - py) <= GRID_CORNER_RADIUS)
+        return { type: 'corner', key };
+    }
+
+    // Column divider handles at midpoint of each col line
     for (let i = 0; i < colDividers.length; i++) {
-      if (Math.abs(colDividers[i] * W - px) <= GRID_HIT_RADIUS)
+      const p = _gridBilinear(colDividers[i], 0.5, W, H);
+      if (Math.hypot(p.x - px, p.y - py) <= GRID_HIT_RADIUS)
         return { type: 'col', index: i };
     }
+
+    // Row divider handles at midpoint of each row line
     for (let i = 0; i < rowDividers.length; i++) {
-      if (Math.abs(rowDividers[i] * H - py) <= GRID_HIT_RADIUS)
+      const p = _gridBilinear(0.5, rowDividers[i], W, H);
+      if (Math.hypot(p.x - px, p.y - py) <= GRID_HIT_RADIUS)
         return { type: 'row', index: i };
     }
+
     return null;
   }
 
@@ -1171,12 +1288,20 @@
       const { px, py } = _gridCanvasPos(e);
       if (!gridDragging) {
         const hit = _gridHitTest(px, py);
-        cvs.style.cursor = hit ? (hit.type === 'col' ? 'col-resize' : 'row-resize') : 'default';
+        if (!hit)                       cvs.style.cursor = 'default';
+        else if (hit.type === 'corner') cvs.style.cursor = 'move';
+        else if (hit.type === 'col')    cvs.style.cursor = 'col-resize';
+        else                            cvs.style.cursor = 'row-resize';
         return;
       }
       const canvas = document.getElementById('grid-canvas');
       const W = canvas.width, H = canvas.height;
-      if (gridDragging.type === 'col') {
+      if (gridDragging.type === 'corner') {
+        gridCorners[gridDragging.key] = [
+          Math.max(0, Math.min(1, px / W)),
+          Math.max(0, Math.min(1, py / H)),
+        ];
+      } else if (gridDragging.type === 'col') {
         const norm = px / W;
         const prev = gridDragging.index > 0 ? colDividers[gridDragging.index - 1] : 0;
         const next = gridDragging.index < colDividers.length - 1 ? colDividers[gridDragging.index + 1] : 1;
@@ -1227,6 +1352,7 @@
       cols:        gridCols,
       col_widths:  _colWidthsFromDividers(),
       row_heights: _rowHeightsFromDividers(),
+      corners:     gridCorners,
     };
     const res = await fetch(`/api/units/${selectedId}/commands/grid`, {
       method:  'POST',
@@ -1245,6 +1371,7 @@
     gridInitialized = false;
     colDividers = [];
     rowDividers = [];
+    gridCorners = { tl:[0,0], tr:[1,0], bl:[0,1], br:[1,1] };
     drawGrid();
     refreshDetail();
   }
@@ -1525,6 +1652,15 @@
     await fetch(`/api/units/${selectedId}/commands/resume`, { method: 'POST' });
     setStatus('Resume queued — normal operation will resume on next poll.');
     refreshDetail();
+  }
+
+  async function setDebugCopy(enabled) {
+    await fetch(`/api/units/${selectedId}/commands/debug-copy`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ enabled }),
+    });
+    setStatus(`Prediction copy ${enabled ? 'enabled' : 'disabled'} — will apply on next poll.`);
   }
 
   // ── Location editing ───────────────────────────────────────────────────────
