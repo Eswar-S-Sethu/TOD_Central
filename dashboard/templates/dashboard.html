@@ -760,6 +760,17 @@
         <span class="toggle-label">Save Prediction Copy</span>
       </div>
       <p class="toggle-note">When on, every JSON uploaded to GCS is also saved to <code>Prediction_Data_Copy/</code> on the unit for local inspection.</p>
+
+      <!-- Capture + Infer -->
+      <div style="margin-top:12px;">
+        <button class="btn-primary" id="btn-debug-capture" onclick="requestDebugCapture()">Capture + Infer</button>
+        <span id="debug-capture-status" style="font-size:0.82em; color:#888; margin-left:8px;"></span>
+      </div>
+      <div id="debug-capture-result" style="display:none; margin-top:12px;">
+        <div id="debug-capture-meta" style="font-size:0.82em; color:#888; margin-bottom:6px;"></div>
+        <img id="debug-capture-img" alt="inferred capture" style="max-width:100%; border-radius:4px; display:block;">
+        <div id="debug-grid-container" style="margin-top:10px;"></div>
+      </div>
     </div>
 
   </div><!-- #detail -->
@@ -798,8 +809,10 @@
   let gridInitialized     = false;  // true after first grid init for selected unit
   const GRID_HIT_RADIUS   = 8;
   const GRID_CORNER_RADIUS = 10;
-  let wifiScanTs           = null;
-  let wifiConnectTs        = null;
+  let wifiScanTs            = null;
+  let wifiConnectTs         = null;
+  let lastDebugCaptureTs    = null;
+  let debugCapturePollTimer = null;
   let wifiScanPollTimer    = null;
   let wifiConnectPollTimer = null;
   let _wifiNetworks        = [];
@@ -847,9 +860,14 @@
     clearSnapshotPoll();
     clearWifiScanPoll();
     clearWifiConnectPoll();
+    clearDebugCapturePoll();
     closeWifiModal();
-    wifiScanTs    = null;
-    wifiConnectTs = null;
+    wifiScanTs         = null;
+    wifiConnectTs      = null;
+    lastDebugCaptureTs = null;
+    document.getElementById('debug-capture-result').style.display = 'none';
+    document.getElementById('debug-capture-status').textContent   = '';
+    document.getElementById('btn-debug-capture').disabled         = false;
     _wifiNetworks = [];
     resetCropPanel();
     document.getElementById('wifi-network-list').innerHTML = '';
@@ -1020,6 +1038,17 @@
       el.style.color = wifiConnect.success ? '#2a7' : '#c44';
       el.textContent = (wifiConnect.success ? '✓ ' : '✗ ') + wifiConnect.message;
     }
+
+    // Debug capture result (update when timestamp changes)
+    const dc = unit.debug_capture;
+    if (dc && dc.timestamp !== lastDebugCaptureTs) {
+      lastDebugCaptureTs = dc.timestamp;
+      clearDebugCapturePoll();
+      renderDebugCapture(dc);
+      document.getElementById('btn-debug-capture').disabled = false;
+      document.getElementById('debug-capture-status').textContent =
+        `Done \u2014 ${dc.detection_count} detection(s)`;
+    }
   }
 
   // ── Full-frame snapshot display + crop overlay canvas ──────────────────────
@@ -1036,6 +1065,61 @@
       drawCroppedView();
       drawGrid();
     };
+  }
+
+  // ── Debug capture + inference ───────────────────────────────────────────────
+  function clearDebugCapturePoll() {
+    if (debugCapturePollTimer) { clearInterval(debugCapturePollTimer); debugCapturePollTimer = null; }
+  }
+
+  async function requestDebugCapture() {
+    document.getElementById('btn-debug-capture').disabled = true;
+    document.getElementById('debug-capture-status').textContent = 'Requesting capture + inference\u2026';
+    const res = await fetch(`/api/units/${selectedId}/commands/debug-capture`, { method: 'POST' });
+    if (!res.ok) {
+      document.getElementById('debug-capture-status').textContent = 'Failed to send command.';
+      document.getElementById('btn-debug-capture').disabled = false;
+      return;
+    }
+    clearDebugCapturePoll();
+    const beforeTs = lastDebugCaptureTs;
+    debugCapturePollTimer = setInterval(async () => {
+      await refreshDetail();
+      if (lastDebugCaptureTs !== beforeTs) clearDebugCapturePoll();
+    }, 2000);
+    setTimeout(() => {
+      if (debugCapturePollTimer) {
+        clearDebugCapturePoll();
+        document.getElementById('debug-capture-status').textContent = 'Timed out \u2014 unit may be offline or busy.';
+        document.getElementById('btn-debug-capture').disabled = false;
+      }
+    }, 60000);
+  }
+
+  function renderDebugCapture(dc) {
+    document.getElementById('debug-capture-result').style.display = 'block';
+    document.getElementById('debug-capture-img').src = 'data:image/jpeg;base64,' + dc.data;
+    document.getElementById('debug-capture-meta').textContent =
+      `${dc.width ?? '?'}\u00d7${dc.height ?? '?'} \u00b7 ${dc.detection_count} detection(s) \u00b7 ${new Date(dc.timestamp).toLocaleTimeString()}`;
+
+    const container = document.getElementById('debug-grid-container');
+    const grid = dc.trolley_grid;
+    if (!grid || grid.length === 0) {
+      container.innerHTML = '<p style="font-size:0.82em;color:#888;margin:4px 0;">No grid configured \u2014 trolley_grid not available.</p>';
+      return;
+    }
+    let html = '<table style="border-collapse:collapse;font-size:0.78em;margin:4px auto;">';
+    for (let r = 0; r < grid.length; r++) {
+      html += '<tr>';
+      for (let c = 0; c < grid[r].length; c++) {
+        const occ = grid[r][c];
+        const bg  = occ ? '#c0392b' : '#1a472a';
+        html += `<td style="width:34px;height:26px;background:${bg};border:1px solid #333;text-align:center;color:#fff;font-weight:bold;">${occ ? '\u25a0' : ''}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</table><p style="font-size:0.78em;color:#888;text-align:center;margin:4px 0 0;">Red = occupied</p>';
+    container.innerHTML = html;
   }
 
   function syncCanvas() {

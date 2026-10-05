@@ -40,6 +40,7 @@ def register_unit(unit_id, location, config):
             "wifi_connect":     existing.get("wifi_connect"),
             "pending_commands": existing.get("pending_commands", []),
             "snapshot":         existing.get("snapshot"),
+            "debug_capture":    existing.get("debug_capture"),
             "_snap_times":      existing.get("_snap_times", []),
             "dashboard_crop":   existing.get("dashboard_crop"),
             "dashboard_grid":       existing.get("dashboard_grid"),
@@ -67,6 +68,7 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
                 "wifi_connect":     None,
                 "pending_commands": [],
                 "snapshot":         None,
+                "debug_capture":    None,
                 "_snap_times":      [],
                 "dashboard_crop":   None,
                 "dashboard_grid":       None,
@@ -125,6 +127,20 @@ def store_snapshot(unit_id, image_base64, width, height, timestamp):
         }
 
 
+def store_debug_capture(unit_id, image_base64, trolley_grid, detection_count, width, height):
+    with _lock:
+        if unit_id not in _units:
+            return
+        _units[unit_id]["debug_capture"] = {
+            "data":            image_base64,
+            "trolley_grid":    trolley_grid,
+            "detection_count": detection_count,
+            "width":           width,
+            "height":          height,
+            "timestamp":       _now().isoformat(),
+        }
+
+
 # ── Dashboard API ──────────────────────────────────────────────────────────────
 
 def get_all_units():
@@ -170,6 +186,7 @@ def get_unit(unit_id):
             "wifi_scan":             u.get("wifi_scan"),
             "wifi_connect":          u.get("wifi_connect"),
             "op_hours":              u.get("op_hours", {"start": "08:00", "end": "17:00"}),
+            "debug_capture":         u.get("debug_capture"),
         }
 
 

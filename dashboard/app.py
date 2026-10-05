@@ -177,6 +177,27 @@ def set_debug_copy(unit_id):
     return jsonify({"status": "queued", "enabled": enabled})
 
 
+@app.route("/api/units/<unit_id>/commands/debug-capture", methods=["POST"])
+def request_debug_capture(unit_id):
+    if not store.queue_command(unit_id, {"type": "request_debug_capture"}):
+        abort(404)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/debug_capture", methods=["POST"])
+def receive_debug_capture(unit_id):
+    d = request.get_json()
+    store.store_debug_capture(
+        unit_id,
+        d.get("image_base64"),
+        d.get("trolley_grid", []),
+        d.get("detection_count", 0),
+        d.get("width"),
+        d.get("height"),
+    )
+    return jsonify({"status": "received"})
+
+
 @app.route("/api/units/<unit_id>/commands/snap", methods=["POST"])
 def trigger_snap(unit_id):
     if not store.queue_command(unit_id, {"type": "snap"}):
