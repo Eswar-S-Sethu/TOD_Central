@@ -42,9 +42,8 @@ def register_unit(unit_id, location, config):
             "snapshot":         existing.get("snapshot"),
             "_snap_times":      existing.get("_snap_times", []),
             "dashboard_crop":   existing.get("dashboard_crop"),
+            "dashboard_grid":   existing.get("dashboard_grid"),
             "op_hours":         existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
-            "location_lat":     existing.get("location_lat"),
-            "location_lon":     existing.get("location_lon"),
         }
 
 
@@ -69,9 +68,8 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
                 "snapshot":         None,
                 "_snap_times":      [],
                 "dashboard_crop":   None,
+                "dashboard_grid":   None,
                 "op_hours":         {"start": "08:00", "end": "17:00"},
-                "location_lat":     None,
-                "location_lon":     None,
             }
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
@@ -162,14 +160,13 @@ def get_unit(unit_id):
             "snapshot_height":       snap["height"]    if snap else None,
             "pending_commands_count": len(u["pending_commands"]),
             "crop":                  u.get("dashboard_crop"),
+            "grid":                  u.get("dashboard_grid"),
             "standby":               u.get("standby", False),
             "health":                u.get("health"),
             "network":               u.get("network"),
             "wifi_scan":             u.get("wifi_scan"),
             "wifi_connect":          u.get("wifi_connect"),
             "op_hours":              u.get("op_hours", {"start": "08:00", "end": "17:00"}),
-            "location_lat":          u.get("location_lat"),
-            "location_lon":          u.get("location_lon"),
         }
 
 
@@ -179,15 +176,11 @@ def get_snapshot(unit_id):
         return dict(u["snapshot"]) if u and u.get("snapshot") else None
 
 
-def set_unit_location(unit_id, location, lat=None, lon=None):
+def set_unit_location(unit_id, location):
     with _lock:
         if unit_id not in _units:
             return False
         _units[unit_id]["location"] = location
-        if lat is not None:
-            _units[unit_id]["location_lat"] = lat
-        if lon is not None:
-            _units[unit_id]["location_lon"] = lon
         return True
 
 
@@ -212,6 +205,22 @@ def clear_unit_crop(unit_id):
         if unit_id not in _units:
             return False
         _units[unit_id]["dashboard_crop"] = None
+        return True
+
+
+def set_unit_grid(unit_id, grid):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["dashboard_grid"] = grid
+        return True
+
+
+def clear_unit_grid(unit_id):
+    with _lock:
+        if unit_id not in _units:
+            return False
+        _units[unit_id]["dashboard_grid"] = None
         return True
 
 

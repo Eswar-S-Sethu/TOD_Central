@@ -196,6 +196,54 @@
       background: #0d0d0d;
     }
 
+    /* ── Grid editor ── */
+    #grid-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 180px;
+      color: #444;
+      font-size: 0.85rem;
+      background: #0d0d0d;
+      border-radius: 4px;
+      text-align: center;
+      padding: 16px;
+    }
+
+    #grid-canvas {
+      display: block;
+      width: 100%;
+      border-radius: 4px;
+      background: #0d0d0d;
+    }
+
+    .grid-control-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .grid-control-row label {
+      font-size: 0.85rem;
+      color: #888;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .grid-num-input {
+      width: 52px;
+      background: #222;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #eee;
+      padding: 5px 8px;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
     /* ── Buttons ── */
     .btn-row {
       display: flex;
@@ -517,10 +565,6 @@
         <div id="location-edit">
           <input id="location-input" type="text" placeholder="Location name"
                  onkeydown="if(event.key==='Enter')saveLocation();if(event.key==='Escape')cancelEditLocation();">
-          <input id="lat-input" type="number" step="any" placeholder="Latitude"
-                 style="width:110px;background:#222;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:0.85rem;">
-          <input id="lon-input" type="number" step="any" placeholder="Longitude"
-                 style="width:110px;background:#222;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:0.85rem;">
           <button class="btn-primary" style="padding:5px 12px;font-size:0.82rem;" onclick="saveLocation()">Save</button>
           <button class="btn-secondary" style="padding:5px 12px;font-size:0.82rem;" onclick="cancelEditLocation()">Cancel</button>
         </div>
@@ -601,6 +645,24 @@
       </div>
     </div>
 
+    <!-- Grid Setup -->
+    <div class="section">
+      <div class="section-title">Grid Setup</div>
+      <div class="grid-control-row">
+        <label>Rows <input type="number" id="grid-rows-input" class="grid-num-input" value="3" min="1" max="10"></label>
+        <label>Cols <input type="number" id="grid-cols-input" class="grid-num-input" value="4" min="1" max="10"></label>
+        <button class="btn-secondary" onclick="resetGridDividers()">Reset to Uniform</button>
+      </div>
+      <div id="grid-placeholder">Request a snapshot and apply a crop to set up a grid.</div>
+      <canvas id="grid-canvas" style="display:none;"></canvas>
+      <div id="grid-status" style="font-size:0.8rem;color:#888;margin-top:8px;min-height:1.2em;"></div>
+      <div class="btn-row">
+        <button class="btn-primary"   onclick="applyGrid()">Set Grid</button>
+        <button class="btn-secondary" onclick="clearGridCmd()">Clear Grid</button>
+      </div>
+      <p style="font-size:0.75rem;color:#555;margin-top:8px;">Drag the cyan lines to resize rows and columns. Cell indices (row,col) are shown inside each cell.</p>
+    </div>
+
     <!-- Operational Hours -->
     <div class="section">
       <div class="section-title">Operational Hours</div>
@@ -665,6 +727,13 @@
   let snapshotPollTimer = null;   // interval timer while waiting for snapshot
   let currentRect       = null;   // rectangle drawn by user (canvas coords)
   let savedCrop         = null;   // confirmed crop region (frame coords)
+  let gridRows          = 3;
+  let gridCols          = 4;
+  let colDividers       = [];     // internal col divider fractions, e.g. [0.25, 0.50, 0.75]
+  let rowDividers       = [];     // internal row divider fractions, e.g. [0.333, 0.667]
+  let gridDragging      = null;   // {type:'col'|'row', index}
+  let gridInitialized   = false;  // true after first grid init for selected unit
+  const GRID_HIT_RADIUS = 8;
   let wifiScanTs           = null;
   let wifiConnectTs        = null;
   let wifiScanPollTimer    = null;
@@ -706,8 +775,11 @@
   async function selectUnit(id) {
     selectedId     = id;
     lastSnapshotTs = null;
-    currentRect    = null;
-    savedCrop      = null;
+    currentRect      = null;
+    savedCrop        = null;
+    gridInitialized  = false;
+    colDividers      = [];
+    rowDividers      = [];
     clearSnapshotPoll();
     clearWifiScanPoll();
     clearWifiConnectPoll();
@@ -789,10 +861,42 @@
       healthSection.style.display = 'none';
     }
 
-    // Update saved crop and redraw crop preview if snapshot is already loaded
+    // Update saved crop and redraw crop/grid previews if snapshot is already loaded
     savedCrop = crop;
     const img = document.getElementById('snap-img');
-    if (img.naturalWidth) drawCroppedView();
+    if (img.naturalWidth) { drawCroppedView(); drawGrid(); }
+
+    // Initialise grid dividers from saved config (once per unit selection)
+    if (!gridInitialized) {
+      const grid = unit.grid ?? null;
+      if (grid) {
+        gridRows = grid.rows;
+        gridCols = grid.cols;
+        document.getElementById('grid-rows-input').value = gridRows;
+        document.getElementById('grid-cols-input').value = gridCols;
+        colDividers = [];
+        let acc = 0;
+        for (let i = 0; i < grid.col_widths.length - 1; i++) {
+          acc += grid.col_widths[i];
+          colDividers.push(acc);
+        }
+        rowDividers = [];
+        acc = 0;
+        for (let i = 0; i < grid.row_heights.length - 1; i++) {
+          acc += grid.row_heights[i];
+          rowDividers.push(acc);
+        }
+      } else {
+        gridRows = parseInt(document.getElementById('grid-rows-input').value) || 3;
+        gridCols = parseInt(document.getElementById('grid-cols-input').value) || 4;
+        colDividers = [];
+        for (let i = 1; i < gridCols; i++) colDividers.push(i / gridCols);
+        rowDividers = [];
+        for (let i = 1; i < gridRows; i++) rowDividers.push(i / gridRows);
+      }
+      gridInitialized = true;
+      if (img.naturalWidth) drawGrid();
+    }
 
     // Show snapshot when timestamp changes
     if (unit.has_snapshot && unit.snapshot_timestamp !== lastSnapshotTs) {
@@ -827,12 +931,6 @@
     if (document.activeElement.id !== 'op-end-input')
       document.getElementById('op-end-input').value = op.end;
 
-    // Location coordinates (pre-fill edit form if not actively editing)
-    if (document.activeElement.id !== 'lat-input')
-      document.getElementById('lat-input').value = unit.location_lat ?? '';
-    if (document.activeElement.id !== 'lon-input')
-      document.getElementById('lon-input').value = unit.location_lon ?? '';
-
     // WiFi scan results (update only when timestamp changes)
     const wifiScan = unit.wifi_scan;
     if (wifiScan && wifiScan.timestamp !== wifiScanTs) {
@@ -864,6 +962,7 @@
       syncCanvas();
       drawOverlay();
       drawCroppedView();
+      drawGrid();
     };
   }
 
@@ -956,6 +1055,200 @@
     placeholder.textContent   = 'Request a snapshot and apply a crop to see a preview.';
   }
 
+  // ── Grid editor ────────────────────────────────────────────────────────────
+
+  function drawGrid() {
+    const canvas      = document.getElementById('grid-canvas');
+    const placeholder = document.getElementById('grid-placeholder');
+    const img         = document.getElementById('snap-img');
+
+    if (!img.naturalWidth || !savedCrop) {
+      canvas.style.display      = 'none';
+      placeholder.style.display = 'flex';
+      return;
+    }
+
+    placeholder.style.display = 'none';
+    canvas.style.display      = 'block';
+
+    const panelW  = canvas.parentElement.offsetWidth;
+    const aspect  = savedCrop.h > 0 ? savedCrop.w / savedCrop.h : 16 / 9;
+    canvas.width  = panelW;
+    canvas.height = Math.round(panelW / aspect);
+    const W = canvas.width, H = canvas.height;
+    const ctx = canvas.getContext('2d');
+
+    // Background: draw the cropped region of the snapshot
+    ctx.drawImage(img, savedCrop.x, savedCrop.y, savedCrop.w, savedCrop.h, 0, 0, W, H);
+
+    // Grid lines
+    ctx.strokeStyle = '#00c8ff';
+    ctx.lineWidth   = 1;
+    for (const d of colDividers) {
+      const x = d * W;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (const d of rowDividers) {
+      const y = d * H;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    // Drag handles — circles at divider midpoints
+    ctx.fillStyle = '#00c8ff';
+    for (const d of colDividers) {
+      ctx.beginPath(); ctx.arc(d * W, H / 2, 5, 0, Math.PI * 2); ctx.fill();
+    }
+    for (const d of rowDividers) {
+      ctx.beginPath(); ctx.arc(W / 2, d * H, 5, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Cell index labels
+    ctx.fillStyle     = 'rgba(0,200,255,0.55)';
+    ctx.font          = '10px system-ui';
+    ctx.textAlign     = 'center';
+    ctx.textBaseline  = 'middle';
+    const colB = [0, ...colDividers, 1];
+    const rowB = [0, ...rowDividers, 1];
+    for (let r = 0; r < gridRows; r++) {
+      for (let c = 0; c < gridCols; c++) {
+        const x = ((colB[c] + colB[c + 1]) / 2) * W;
+        const y = ((rowB[r] + rowB[r + 1]) / 2) * H;
+        ctx.fillText(`${r},${c}`, x, y);
+      }
+    }
+  }
+
+  function initGridDividers(rows, cols) {
+    gridRows = rows; gridCols = cols;
+    colDividers = [];
+    for (let i = 1; i < cols; i++) colDividers.push(i / cols);
+    rowDividers = [];
+    for (let i = 1; i < rows; i++) rowDividers.push(i / rows);
+    drawGrid();
+  }
+
+  function resetGridDividers() {
+    const rows = Math.max(1, Math.min(10, parseInt(document.getElementById('grid-rows-input').value) || 3));
+    const cols = Math.max(1, Math.min(10, parseInt(document.getElementById('grid-cols-input').value) || 4));
+    document.getElementById('grid-rows-input').value = rows;
+    document.getElementById('grid-cols-input').value = cols;
+    initGridDividers(rows, cols);
+  }
+
+  function _gridCanvasPos(e) {
+    const canvas = document.getElementById('grid-canvas');
+    const r      = canvas.getBoundingClientRect();
+    return {
+      px: (e.clientX - r.left) * (canvas.width  / r.width),
+      py: (e.clientY - r.top)  * (canvas.height / r.height),
+    };
+  }
+
+  function _gridHitTest(px, py) {
+    const canvas = document.getElementById('grid-canvas');
+    const W = canvas.width, H = canvas.height;
+    for (let i = 0; i < colDividers.length; i++) {
+      if (Math.abs(colDividers[i] * W - px) <= GRID_HIT_RADIUS)
+        return { type: 'col', index: i };
+    }
+    for (let i = 0; i < rowDividers.length; i++) {
+      if (Math.abs(rowDividers[i] * H - py) <= GRID_HIT_RADIUS)
+        return { type: 'row', index: i };
+    }
+    return null;
+  }
+
+  (function() {
+    const cvs = document.getElementById('grid-canvas');
+    const MIN_GAP = 0.05;
+
+    cvs.addEventListener('mousedown', e => {
+      const { px, py } = _gridCanvasPos(e);
+      gridDragging = _gridHitTest(px, py);
+    });
+
+    cvs.addEventListener('mousemove', e => {
+      const { px, py } = _gridCanvasPos(e);
+      if (!gridDragging) {
+        const hit = _gridHitTest(px, py);
+        cvs.style.cursor = hit ? (hit.type === 'col' ? 'col-resize' : 'row-resize') : 'default';
+        return;
+      }
+      const canvas = document.getElementById('grid-canvas');
+      const W = canvas.width, H = canvas.height;
+      if (gridDragging.type === 'col') {
+        const norm = px / W;
+        const prev = gridDragging.index > 0 ? colDividers[gridDragging.index - 1] : 0;
+        const next = gridDragging.index < colDividers.length - 1 ? colDividers[gridDragging.index + 1] : 1;
+        colDividers[gridDragging.index] = Math.max(prev + MIN_GAP, Math.min(next - MIN_GAP, norm));
+      } else {
+        const norm = py / H;
+        const prev = gridDragging.index > 0 ? rowDividers[gridDragging.index - 1] : 0;
+        const next = gridDragging.index < rowDividers.length - 1 ? rowDividers[gridDragging.index + 1] : 1;
+        rowDividers[gridDragging.index] = Math.max(prev + MIN_GAP, Math.min(next - MIN_GAP, norm));
+      }
+      drawGrid();
+    });
+
+    cvs.addEventListener('mouseup',    () => { gridDragging = null; });
+    cvs.addEventListener('mouseleave', () => { gridDragging = null; });
+  })();
+
+  document.getElementById('grid-rows-input').addEventListener('change', () => {
+    const rows = Math.max(1, Math.min(10, parseInt(document.getElementById('grid-rows-input').value) || 3));
+    document.getElementById('grid-rows-input').value = rows;
+    initGridDividers(rows, gridCols);
+  });
+
+  document.getElementById('grid-cols-input').addEventListener('change', () => {
+    const cols = Math.max(1, Math.min(10, parseInt(document.getElementById('grid-cols-input').value) || 4));
+    document.getElementById('grid-cols-input').value = cols;
+    initGridDividers(gridRows, cols);
+  });
+
+  function _colWidthsFromDividers() {
+    const b = [0, ...colDividers, 1];
+    return Array.from({ length: gridCols }, (_, i) =>
+      Math.round((b[i + 1] - b[i]) * 1e6) / 1e6
+    );
+  }
+
+  function _rowHeightsFromDividers() {
+    const b = [0, ...rowDividers, 1];
+    return Array.from({ length: gridRows }, (_, i) =>
+      Math.round((b[i + 1] - b[i]) * 1e6) / 1e6
+    );
+  }
+
+  async function applyGrid() {
+    if (!selectedId) return;
+    const body = {
+      rows:        gridRows,
+      cols:        gridCols,
+      col_widths:  _colWidthsFromDividers(),
+      row_heights: _rowHeightsFromDividers(),
+    };
+    const res = await fetch(`/api/units/${selectedId}/commands/grid`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    document.getElementById('grid-status').textContent = res.ok
+      ? `Grid queued (${gridRows}×${gridCols}) — will apply on next poll.`
+      : 'Failed to queue grid command.';
+  }
+
+  async function clearGridCmd() {
+    if (!selectedId) return;
+    await fetch(`/api/units/${selectedId}/commands/grid`, { method: 'DELETE' });
+    document.getElementById('grid-status').textContent = 'Grid cleared.';
+    gridInitialized = false;
+    colDividers = [];
+    rowDividers = [];
+    drawGrid();
+    refreshDetail();
+  }
+
   // ── Canvas mouse events ────────────────────────────────────────────────────
   let dragging = false, dragSx = 0, dragSy = 0;
 
@@ -982,7 +1275,7 @@
 
   document.getElementById('snap-canvas').addEventListener('mouseup', () => { dragging = false; });
 
-  window.addEventListener('resize', () => { syncCanvas(); drawOverlay(); drawCroppedView(); });
+  window.addEventListener('resize', () => { syncCanvas(); drawOverlay(); drawCroppedView(); drawGrid(); });
 
   // ── Canvas touch events (mobile) ───────────────────────────────────────────
   (function() {
@@ -1260,19 +1553,13 @@
   async function saveLocation() {
     const name = document.getElementById('location-input').value.trim();
     if (!name) return;
-    const latVal = parseFloat(document.getElementById('lat-input').value);
-    const lonVal = parseFloat(document.getElementById('lon-input').value);
     await fetch(`/api/units/${selectedId}/commands/location`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        location: name,
-        lat: isNaN(latVal) ? null : latVal,
-        lon: isNaN(lonVal) ? null : lonVal,
-      }),
+      body: JSON.stringify({ location: name }),
     });
     cancelEditLocation();
-    setStatus(`Location "${name}" queued — applies on next poll, persists across restarts.`);
+    setStatus(`Location "${name}" queued — coordinates auto-geocoded on unit, applies on next poll.`);
     refreshDetail();
   }
 

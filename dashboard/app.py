@@ -106,6 +106,29 @@ def clear_crop(unit_id):
     return jsonify({"status": "queued"})
 
 
+@app.route("/api/units/<unit_id>/commands/grid", methods=["POST"])
+def set_grid(unit_id):
+    d = request.get_json()
+    grid = {
+        "rows":        d["rows"],
+        "cols":        d["cols"],
+        "col_widths":  d["col_widths"],
+        "row_heights": d["row_heights"],
+    }
+    if not store.queue_command(unit_id, {"type": "set_grid", "data": grid}):
+        abort(404)
+    store.set_unit_grid(unit_id, grid)
+    return jsonify({"status": "queued"})
+
+
+@app.route("/api/units/<unit_id>/commands/grid", methods=["DELETE"])
+def clear_grid(unit_id):
+    if not store.queue_command(unit_id, {"type": "clear_grid"}):
+        abort(404)
+    store.clear_unit_grid(unit_id)
+    return jsonify({"status": "queued"})
+
+
 @app.route("/api/units/<unit_id>/commands/interval", methods=["POST"])
 def set_interval(unit_id):
     d = request.get_json()
@@ -121,13 +144,11 @@ def set_interval(unit_id):
 def set_location(unit_id):
     d = request.get_json()
     location = (d.get("location") or "").strip()
-    lat = d.get("lat")
-    lon = d.get("lon")
     if not location:
         return jsonify({"error": "location must not be empty"}), 400
-    if not store.queue_command(unit_id, {"type": "set_location", "location": location, "lat": lat, "lon": lon}):
+    if not store.queue_command(unit_id, {"type": "set_location", "location": location}):
         abort(404)
-    store.set_unit_location(unit_id, location, lat, lon)
+    store.set_unit_location(unit_id, location)
     return jsonify({"status": "queued"})
 
 
