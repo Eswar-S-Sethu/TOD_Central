@@ -30,10 +30,28 @@
     #sidebar-header {
       padding: 18px 16px 14px;
       border-bottom: 1px solid #2a2a2a;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
     }
 
     #sidebar-header h1 { font-size: 1rem; font-weight: 600; color: #fff; }
     #sidebar-header p  { font-size: 0.75rem; color: #666; margin-top: 2px; }
+
+    #signout-btn {
+      background: none;
+      border: 1px solid #333;
+      color: #666;
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    #signout-btn:hover { color: #bbb; border-color: #555; }
 
     #unit-list {
       flex: 1;
@@ -590,8 +608,13 @@
 <!-- ── Sidebar ─────────────────────────────────────────────────────────────── -->
 <aside id="sidebar">
   <div id="sidebar-header">
-    <h1>TOD Camera</h1>
-    <p>Dashboard</p>
+    <div>
+      <h1>TOD Camera</h1>
+      <p>Dashboard</p>
+    </div>
+    <form method="POST" action="/logout">
+      <button type="submit" id="signout-btn">Sign out</button>
+    </form>
   </div>
   <div id="unit-list"><p style="padding:12px;color:#444;font-size:0.85rem;">Loading&hellip;</p></div>
 </aside>
@@ -794,6 +817,17 @@
 </div>
 
 <script>
+  // ── Auth: redirect to /login on any 401 ────────────────────────────────────
+  (function() {
+    const _fetch = window.fetch;
+    window.fetch = function(...args) {
+      return _fetch(...args).then(r => {
+        if (r.status === 401) window.location.href = '/login';
+        return r;
+      });
+    };
+  })();
+
   // ── State ──────────────────────────────────────────────────────────────────
   let selectedId        = null;
   let lastSnapshotTs    = null;   // timestamp of last received snapshot

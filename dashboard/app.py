@@ -1,14 +1,74 @@
 import base64
+import os
 import re
+from functools import wraps
 
-from flask import Flask, Response, abort, jsonify, render_template, request
+from flask import (
+    Flask, Response, abort, jsonify, redirect,
+    render_template, request, session, url_for,
+)
 
 import store
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-before-deploying")
+
+# Set DASHBOARD_PASSWORD as an environment variable on Render.
+# If not set, the dashboard is inaccessible (returns 503) so you can't
+# accidentally leave it open in production.
+_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
 
-# ── Camera unit endpoints ──────────────────────────────────────────────────────
+# ── Auth helpers ───────────────────────────────────────────────────────────────
+
+def login_required(f):
+    """Protects dashboard-facing routes. Camera unit routes are intentionally excluded."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _PASSWORD:
+            return Response(
+                "DASHBOARD_PASSWORD environment variable is not set. "
+                "Configure it on Render before using the dashboard.",
+                status=503, mimetype="text/plain",
+            )
+        if not session.get("authenticated"):
+            # API calls from JS get a 401; browser navigations get a redirect.
+            if request.accept_mimetypes.best == "application/json" \
+                    or request.path.startswith("/api/"):
+                return jsonify({"error": "Unauthorized"}), 401
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ── Login / logout ─────────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    if session.get("authenticated"):
+        return redirect(url_for("dashboard"))
+    error = request.args.get("error")
+    return render_template("login.html", error=error)
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    if not _PASSWORD:
+        return redirect(url_for("login_page", error="no_password"))
+    if request.form.get("password") == _PASSWORD:
+        session["authenticated"] = True
+        session.permanent = True
+        return redirect(url_for("dashboard"))
+    return redirect(url_for("login_page", error="wrong"))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login_page"))
+
+
+# ── Camera unit endpoints (open — no auth) ────────────────────────────────────
 
 @app.route("/api/units/register", methods=["POST"])
 def register():
@@ -53,14 +113,30 @@ def receive_wifi_connect_result(unit_id):
     return jsonify({"status": "received"})
 
 
-# ── Dashboard data endpoints ───────────────────────────────────────────────────
+@app.route("/api/units/<unit_id>/debug_capture", methods=["POST"])
+def receive_debug_capture(unit_id):
+    d = request.get_json()
+    store.store_debug_capture(
+        unit_id,
+        d.get("image_base64"),
+        d.get("trolley_grid", []),
+        d.get("detection_count", 0),
+        d.get("width"),
+        d.get("height"),
+    )
+    return jsonify({"status": "received"})
+
+
+# ── Dashboard data endpoints (auth required) ───────────────────────────────────
 
 @app.route("/api/units", methods=["GET"])
+@login_required
 def list_units():
     return jsonify(store.get_all_units())
 
 
 @app.route("/api/units/<unit_id>", methods=["GET"])
+@login_required
 def get_unit(unit_id):
     u = store.get_unit(unit_id)
     if not u:
@@ -70,6 +146,7 @@ def get_unit(unit_id):
 
 
 @app.route("/api/units/<unit_id>/snapshot.jpg", methods=["GET"])
+@login_required
 def get_snapshot_image(unit_id):
     snap = store.get_snapshot(unit_id)
     if not snap:
@@ -77,9 +154,10 @@ def get_snapshot_image(unit_id):
     return Response(base64.b64decode(snap["data"]), mimetype="image/jpeg")
 
 
-# ── Dashboard command endpoints ────────────────────────────────────────────────
+# ── Dashboard command endpoints (auth required) ────────────────────────────────
 
 @app.route("/api/units/<unit_id>/commands/snapshot", methods=["POST"])
+@login_required
 def request_snapshot(unit_id):
     if not store.can_request_snapshot(unit_id):
         return jsonify({"error": "Rate limit: max 10 snapshots per minute"}), 429
@@ -89,6 +167,7 @@ def request_snapshot(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/crop", methods=["POST"])
+@login_required
 def set_crop(unit_id):
     d = request.get_json()
     crop = {"x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]}
@@ -99,6 +178,7 @@ def set_crop(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/crop", methods=["DELETE"])
+@login_required
 def clear_crop(unit_id):
     if not store.queue_command(unit_id, {"type": "clear_crop"}):
         abort(404)
@@ -107,6 +187,7 @@ def clear_crop(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/grid", methods=["POST"])
+@login_required
 def set_grid(unit_id):
     d = request.get_json()
     grid = {
@@ -124,6 +205,7 @@ def set_grid(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/grid", methods=["DELETE"])
+@login_required
 def clear_grid(unit_id):
     if not store.queue_command(unit_id, {"type": "clear_grid"}):
         abort(404)
@@ -132,6 +214,7 @@ def clear_grid(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/interval", methods=["POST"])
+@login_required
 def set_interval(unit_id):
     d = request.get_json()
     interval = d.get("interval")
@@ -143,6 +226,7 @@ def set_interval(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/location", methods=["POST"])
+@login_required
 def set_location(unit_id):
     d = request.get_json()
     location = (d.get("location") or "").strip()
@@ -155,6 +239,7 @@ def set_location(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/operational-hours", methods=["POST"])
+@login_required
 def set_operational_hours(unit_id):
     d     = request.get_json()
     start = (d.get("start") or "").strip()
@@ -168,6 +253,7 @@ def set_operational_hours(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/debug-copy", methods=["POST"])
+@login_required
 def set_debug_copy(unit_id):
     d = request.get_json()
     enabled = bool(d.get("enabled", False))
@@ -178,27 +264,15 @@ def set_debug_copy(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/debug-capture", methods=["POST"])
+@login_required
 def request_debug_capture(unit_id):
     if not store.queue_command(unit_id, {"type": "request_debug_capture"}):
         abort(404)
     return jsonify({"status": "queued"})
 
 
-@app.route("/api/units/<unit_id>/debug_capture", methods=["POST"])
-def receive_debug_capture(unit_id):
-    d = request.get_json()
-    store.store_debug_capture(
-        unit_id,
-        d.get("image_base64"),
-        d.get("trolley_grid", []),
-        d.get("detection_count", 0),
-        d.get("width"),
-        d.get("height"),
-    )
-    return jsonify({"status": "received"})
-
-
 @app.route("/api/units/<unit_id>/commands/snap", methods=["POST"])
+@login_required
 def trigger_snap(unit_id):
     if not store.queue_command(unit_id, {"type": "snap"}):
         abort(404)
@@ -206,6 +280,7 @@ def trigger_snap(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/standby", methods=["POST"])
+@login_required
 def standby_unit(unit_id):
     if not store.queue_command(unit_id, {"type": "set_standby"}):
         abort(404)
@@ -213,6 +288,7 @@ def standby_unit(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/resume", methods=["POST"])
+@login_required
 def resume_unit(unit_id):
     if not store.queue_command(unit_id, {"type": "resume"}):
         abort(404)
@@ -220,6 +296,7 @@ def resume_unit(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/wifi/scan", methods=["POST"])
+@login_required
 def request_wifi_scan(unit_id):
     if not store.queue_command(unit_id, {"type": "wifi_scan"}):
         abort(404)
@@ -227,6 +304,7 @@ def request_wifi_scan(unit_id):
 
 
 @app.route("/api/units/<unit_id>/commands/wifi/connect", methods=["POST"])
+@login_required
 def request_wifi_connect(unit_id):
     d = request.get_json()
     ssid = (d.get("ssid") or "").strip()
@@ -240,6 +318,7 @@ def request_wifi_connect(unit_id):
 # ── Dashboard UI ───────────────────────────────────────────────────────────────
 
 @app.route("/")
+@login_required
 def dashboard():
     return render_template("dashboard.html")
 
