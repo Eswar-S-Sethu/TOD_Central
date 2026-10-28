@@ -1,6 +1,9 @@
 import base64
+import io
+import json
 import os
 import re
+import zipfile
 from functools import wraps
 
 from flask import (
@@ -41,6 +44,16 @@ def login_required(f):
     return decorated
 
 
+def _check_unit_auth(unit_id):
+    """Validates the Authorization: Bearer header for unit-facing endpoints.
+    Returns True if the key matches the stored API key for the unit."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    key = auth[7:].strip()
+    return store.verify_api_key(unit_id, key)
+
+
 # ── Login / logout ─────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET"])
@@ -68,19 +81,25 @@ def logout():
     return redirect(url_for("login_page"))
 
 
-# ── Camera unit endpoints (open — no auth) ────────────────────────────────────
+# ── Camera unit endpoints ──────────────────────────────────────────────────────
 
 @app.route("/api/units/register", methods=["POST"])
 def register():
     d = request.get_json()
-    store.register_unit(d["id"], d["location"], d.get("config", {}))
-    return jsonify({"status": "registered"})
+    api_key = store.register_unit(d["id"], d["location"], d.get("config", {}))
+    return jsonify({"status": "registered", "api_key": api_key})
 
 
 @app.route("/api/units/<unit_id>/poll", methods=["POST"])
 def poll(unit_id):
+    # If the unit is already known, verify its API key.
+    # If it's unknown (hub restarted), auto-register and return a new key.
+    if store.unit_exists(unit_id):
+        if not _check_unit_auth(unit_id):
+            return jsonify({"error": "invalid_api_key"}), 401
+
     d = request.get_json()
-    commands = store.poll_unit(
+    commands, new_api_key = store.poll_unit(
         unit_id,
         d.get("config", {}),
         d.get("location"),
@@ -89,11 +108,16 @@ def poll(unit_id):
         d.get("network"),
         d.get("op_hours"),
     )
-    return jsonify({"commands": commands})
+    resp = {"commands": commands}
+    if new_api_key:
+        resp["api_key"] = new_api_key
+    return jsonify(resp)
 
 
 @app.route("/api/units/<unit_id>/snapshot", methods=["POST"])
 def receive_snapshot(unit_id):
+    if not _check_unit_auth(unit_id):
+        abort(401)
     d = request.get_json()
     store.store_snapshot(unit_id, d["image_base64"], d.get("width"), d.get("height"), d.get("timestamp"))
     return jsonify({"status": "received"})
@@ -101,6 +125,8 @@ def receive_snapshot(unit_id):
 
 @app.route("/api/units/<unit_id>/wifi_scan", methods=["POST"])
 def receive_wifi_scan(unit_id):
+    if not _check_unit_auth(unit_id):
+        abort(401)
     d = request.get_json()
     store.store_wifi_scan(unit_id, d.get("networks", []))
     return jsonify({"status": "received"})
@@ -108,6 +134,8 @@ def receive_wifi_scan(unit_id):
 
 @app.route("/api/units/<unit_id>/wifi_connect_result", methods=["POST"])
 def receive_wifi_connect_result(unit_id):
+    if not _check_unit_auth(unit_id):
+        abort(401)
     d = request.get_json()
     store.store_wifi_connect_result(unit_id, d.get("ssid"), d.get("success"), d.get("message"))
     return jsonify({"status": "received"})
@@ -115,6 +143,8 @@ def receive_wifi_connect_result(unit_id):
 
 @app.route("/api/units/<unit_id>/debug_capture", methods=["POST"])
 def receive_debug_capture(unit_id):
+    if not _check_unit_auth(unit_id):
+        abort(401)
     d = request.get_json()
     store.store_debug_capture(
         unit_id,
@@ -124,6 +154,16 @@ def receive_debug_capture(unit_id):
         d.get("width"),
         d.get("height"),
     )
+    return jsonify({"status": "received"})
+
+
+@app.route("/api/units/<unit_id>/capture", methods=["POST"])
+def receive_capture(unit_id):
+    """Receives a capture payload pushed by the unit after each scheduled capture."""
+    if not _check_unit_auth(unit_id):
+        abort(401)
+    d = request.get_json()
+    store.store_capture(unit_id, d)
     return jsonify({"status": "received"})
 
 
@@ -152,6 +192,36 @@ def get_snapshot_image(unit_id):
     if not snap:
         abort(404)
     return Response(base64.b64decode(snap["data"]), mimetype="image/jpeg")
+
+
+@app.route("/api/units/<unit_id>/history", methods=["GET"])
+@login_required
+def get_history(unit_id):
+    """Returns the capture history for a unit (newest first, up to 100 records)."""
+    if not store.get_unit(unit_id):
+        abort(404)
+    return jsonify(store.get_capture_history(unit_id))
+
+
+@app.route("/api/units/<unit_id>/download", methods=["GET"])
+@login_required
+def download_data(unit_id):
+    """Downloads all stored capture history as a ZIP of JSON files."""
+    history = store.get_capture_history(unit_id)
+    if not history:
+        abort(404)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, capture in enumerate(history):
+            ts = (capture.get("timestamp") or f"capture_{i}") \
+                .replace(":", "-").replace(" ", "_")
+            zf.writestr(f"{ts}.json", json.dumps(capture, indent=2))
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={unit_id}_captures.zip"},
+    )
 
 
 # ── Dashboard command endpoints (auth required) ────────────────────────────────
@@ -250,17 +320,6 @@ def set_operational_hours(unit_id):
         abort(404)
     store.set_unit_op_hours(unit_id, start, end)
     return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/debug-copy", methods=["POST"])
-@login_required
-def set_debug_copy(unit_id):
-    d = request.get_json()
-    enabled = bool(d.get("enabled", False))
-    if not store.queue_command(unit_id, {"type": "set_debug_copy", "enabled": enabled}):
-        abort(404)
-    store.set_unit_debug_copy(unit_id, enabled)
-    return jsonify({"status": "queued", "enabled": enabled})
 
 
 @app.route("/api/units/<unit_id>/commands/debug-capture", methods=["POST"])

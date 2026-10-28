@@ -772,27 +772,27 @@
       </div>
     </div>
 
+    <!-- Capture History -->
+    <div class="section">
+      <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>Capture History</span>
+        <button class="btn-secondary" style="font-size:0.78rem; padding:4px 12px;"
+                onclick="downloadData()">Download ZIP</button>
+      </div>
+      <div id="history-container">
+        <p style="color:#555; font-size:0.85rem;">No captures received yet.</p>
+      </div>
+    </div>
+
     <!-- Debug -->
     <div class="section">
       <div class="section-title">Debug</div>
-      <div class="toggle-row">
-        <label class="toggle-switch">
-          <input type="checkbox" id="toggle-debug-copy" onchange="setDebugCopy(this.checked)">
-          <span class="toggle-track"></span>
-        </label>
-        <span class="toggle-label">Save Prediction Copy</span>
-      </div>
-      <p class="toggle-note">When on, every JSON uploaded to GCS is also saved to <code>Prediction_Data_Copy/</code> on the unit for local inspection.</p>
-
-      <!-- Capture + Infer -->
-      <div style="margin-top:12px;">
-        <button class="btn-primary" id="btn-debug-capture" onclick="requestDebugCapture()">Capture + Infer</button>
-        <span id="debug-capture-status" style="font-size:0.82em; color:#888; margin-left:8px;"></span>
-      </div>
-      <div id="debug-capture-result" style="display:none; margin-top:12px;">
-        <div id="debug-capture-meta" style="font-size:0.82em; color:#888; margin-bottom:6px;"></div>
-        <img id="debug-capture-img" alt="inferred capture" style="max-width:100%; border-radius:4px; display:block;">
-        <div id="debug-grid-container" style="margin-top:10px;"></div>
+      <!-- Capture + Infer — prediction in the works -->
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span style="display:inline-block; background:#2a2208; border:1px solid #5a4a10; color:#f0b429;
+                     font-size:0.78rem; font-weight:600; padding:3px 10px; border-radius:5px;
+                     letter-spacing:0.04em; text-transform:uppercase;">In the works</span>
+        <span style="font-size:0.82rem; color:#555;">Trolley detection &amp; OCR inference is not yet active.</span>
       </div>
     </div>
 
@@ -920,6 +920,7 @@
     const res = await fetch(`/api/units/${selectedId}`);
     if (!res.ok) return;
     renderDetail(await res.json());
+    loadHistory();
   }
 
   function renderDetail(unit) {
@@ -949,7 +950,6 @@
     document.getElementById('d-mode').style.color      = inStandby ? '#f80' : '#2a7';
     document.getElementById('btn-standby').disabled    = inStandby;
 
-    document.getElementById('toggle-debug-copy').checked = unit.debug_copy || unit.config?.debug_copy || false;
     document.getElementById('btn-resume').disabled     = !inStandby;
 
     document.querySelectorAll('.interval-btn').forEach(b => {
@@ -1772,13 +1772,50 @@
     refreshDetail();
   }
 
-  async function setDebugCopy(enabled) {
-    await fetch(`/api/units/${selectedId}/commands/debug-copy`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ enabled }),
-    });
-    setStatus(`Prediction copy ${enabled ? 'enabled' : 'disabled'} — will apply on next poll.`);
+  // ── Capture history ────────────────────────────────────────────────────────
+
+  async function loadHistory() {
+    if (!selectedId) return;
+    try {
+      const r = await fetch(`/api/units/${selectedId}/history`);
+      if (!r.ok) return;
+      const history = await r.json();
+      renderHistory(history);
+    } catch (e) { /* ignore */ }
+  }
+
+  function renderHistory(history) {
+    const container = document.getElementById('history-container');
+    if (!history || history.length === 0) {
+      container.innerHTML = '<p style="color:#555; font-size:0.85rem;">No captures received yet.</p>';
+      return;
+    }
+    const rows = history.map(c => {
+      const occupied = Array.isArray(c.trolley_grid)
+        ? c.trolley_grid.flat().filter(Boolean).length
+        : '—';
+      return `<tr>
+        <td style="padding:5px 8px; font-size:0.82rem; color:#bbb;">${c.timestamp ?? '—'}</td>
+        <td style="padding:5px 8px; font-size:0.82rem; text-align:center;">${c.trolley_count ?? 0}</td>
+        <td style="padding:5px 8px; font-size:0.82rem; text-align:center;">${occupied}</td>
+      </tr>`;
+    }).join('');
+    container.innerHTML = `
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="border-bottom:1px solid #333;">
+            <th style="padding:5px 8px; font-size:0.78rem; color:#888; text-align:left; font-weight:500;">Timestamp</th>
+            <th style="padding:5px 8px; font-size:0.78rem; color:#888; text-align:center; font-weight:500;">Trolleys</th>
+            <th style="padding:5px 8px; font-size:0.78rem; color:#888; text-align:center; font-weight:500;">Cells Occupied</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function downloadData() {
+    if (!selectedId) return;
+    window.location.href = `/api/units/${selectedId}/download`;
   }
 
   // ── Location editing ───────────────────────────────────────────────────────

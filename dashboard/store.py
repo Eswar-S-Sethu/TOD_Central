@@ -1,14 +1,17 @@
 """
-In-memory state store for the Render dashboard.
+In-memory state store for the hub dashboard.
 All data is lost on server restart — camera units repopulate it within
 one poll cycle (≤ POLL_INTERVAL seconds) after reconnecting.
 """
 
+import secrets
 import threading
 from datetime import datetime, timedelta
 
 _lock  = threading.Lock()
 _units = {}   # unit_id → unit record
+
+_MAX_HISTORY = 100   # capture records to keep per unit
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -25,8 +28,11 @@ def _is_online(unit):
 # ── Camera unit API ────────────────────────────────────────────────────────────
 
 def register_unit(unit_id, location, config):
+    """Creates or updates a unit record. Preserves the existing API key if present.
+    Returns the API key so the caller can include it in the registration response."""
     with _lock:
         existing = _units.get(unit_id, {})
+        api_key  = existing.get("api_key") or secrets.token_hex(32)
         _units[unit_id] = {
             "id":               unit_id,
             "location":         location,
@@ -43,18 +49,37 @@ def register_unit(unit_id, location, config):
             "debug_capture":    existing.get("debug_capture"),
             "_snap_times":      existing.get("_snap_times", []),
             "dashboard_crop":   existing.get("dashboard_crop"),
-            "dashboard_grid":       existing.get("dashboard_grid"),
-            "dashboard_debug_copy": existing.get("dashboard_debug_copy", False),
-            "op_hours":             existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
+            "dashboard_grid":   existing.get("dashboard_grid"),
+            "op_hours":         existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
+            "api_key":          api_key,
+            "capture_history":  existing.get("capture_history", []),
         }
+        return api_key
+
+
+def unit_exists(unit_id):
+    """Returns True if the unit is currently registered in the store."""
+    with _lock:
+        return unit_id in _units
+
+
+def verify_api_key(unit_id, key):
+    """Returns True if key matches the stored API key for this unit."""
+    with _lock:
+        u = _units.get(unit_id)
+        if not u:
+            return False
+        return u.get("api_key") == key
 
 
 def poll_unit(unit_id, config, location=None, standby=None, health=None, network=None, op_hours=None):
-    """Updates last_seen, config, standby, health, network, and optionally location; returns and clears pending commands."""
+    """Updates last_seen, config, standby, health, network; returns (commands, new_api_key).
+    new_api_key is only set when the unit was auto-registered (hub restart resilience)."""
     with _lock:
+        new_api_key = None
         if unit_id not in _units:
-            # Auto-register using poll data — handles server restarts where
-            # in-memory state is lost but the camera unit is still running.
+            # Auto-register — handles server restarts where in-memory state is lost
+            new_api_key = secrets.token_hex(32)
             _units[unit_id] = {
                 "id":               unit_id,
                 "location":         location or unit_id,
@@ -71,9 +96,10 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
                 "debug_capture":    None,
                 "_snap_times":      [],
                 "dashboard_crop":   None,
-                "dashboard_grid":       None,
-                "dashboard_debug_copy": False,
-                "op_hours":             {"start": "08:00", "end": "17:00"},
+                "dashboard_grid":   None,
+                "op_hours":         {"start": "08:00", "end": "17:00"},
+                "api_key":          new_api_key,
+                "capture_history":  [],
             }
         unit = _units[unit_id]
         unit["last_seen"] = _now().isoformat()
@@ -90,7 +116,7 @@ def poll_unit(unit_id, config, location=None, standby=None, health=None, network
             unit["op_hours"] = op_hours
         commands = list(unit["pending_commands"])
         unit["pending_commands"] = []
-        return commands
+        return commands, new_api_key
 
 
 def store_wifi_scan(unit_id, networks):
@@ -141,6 +167,28 @@ def store_debug_capture(unit_id, image_base64, trolley_grid, detection_count, wi
         }
 
 
+def store_capture(unit_id, payload):
+    """Stores a capture payload in the unit's history (newest first, capped at _MAX_HISTORY)."""
+    with _lock:
+        if unit_id not in _units:
+            return False
+        history = _units[unit_id].get("capture_history", [])
+        entry = dict(payload)
+        entry["received_at"] = _now().isoformat()
+        history.insert(0, entry)
+        _units[unit_id]["capture_history"] = history[:_MAX_HISTORY]
+        return True
+
+
+def get_capture_history(unit_id):
+    """Returns the capture history list for a unit (newest first)."""
+    with _lock:
+        u = _units.get(unit_id)
+        if not u:
+            return []
+        return list(u.get("capture_history", []))
+
+
 # ── Dashboard API ──────────────────────────────────────────────────────────────
 
 def get_all_units():
@@ -165,6 +213,7 @@ def get_unit(unit_id):
         if not u:
             return None
         snap = u["snapshot"]
+        history = u.get("capture_history", [])
         return {
             "id":                    u["id"],
             "location":              u["location"],
@@ -179,7 +228,6 @@ def get_unit(unit_id):
             "pending_commands_count": len(u["pending_commands"]),
             "crop":                  u.get("dashboard_crop"),
             "grid":                  u.get("dashboard_grid"),
-            "debug_copy":            u.get("dashboard_debug_copy", False),
             "standby":               u.get("standby", False),
             "health":                u.get("health"),
             "network":               u.get("network"),
@@ -187,6 +235,8 @@ def get_unit(unit_id):
             "wifi_connect":          u.get("wifi_connect"),
             "op_hours":              u.get("op_hours", {"start": "08:00", "end": "17:00"}),
             "debug_capture":         u.get("debug_capture"),
+            "capture_count":         len(history),
+            "last_capture":          history[0]["timestamp"] if history else None,
         }
 
 
@@ -241,14 +291,6 @@ def clear_unit_grid(unit_id):
         if unit_id not in _units:
             return False
         _units[unit_id]["dashboard_grid"] = None
-        return True
-
-
-def set_unit_debug_copy(unit_id, enabled):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["dashboard_debug_copy"] = bool(enabled)
         return True
 
 
