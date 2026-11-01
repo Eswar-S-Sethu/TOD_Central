@@ -609,7 +609,7 @@
 <aside id="sidebar">
   <div id="sidebar-header">
     <div>
-      <h1>TOD Camera</h1>
+      <h1>TOD Central</h1>
       <p>Dashboard</p>
     </div>
     <form method="POST" action="/logout">
@@ -829,6 +829,7 @@
   })();
 
   // ── State ──────────────────────────────────────────────────────────────────
+  let selectedHubId     = null;
   let selectedId        = null;
   let lastSnapshotTs    = null;   // timestamp of last received snapshot
   let snapshotPollTimer = null;   // interval timer while waiting for snapshot
@@ -851,28 +852,46 @@
   let wifiConnectPollTimer = null;
   let _wifiNetworks        = [];
 
-  // ── Unit list ──────────────────────────────────────────────────────────────
-  async function loadUnits() {
-    const res   = await fetch('/api/units');
-    const units = await res.json();
-    const list  = document.getElementById('unit-list');
+  // ── Hub + unit list ────────────────────────────────────────────────────────
+  async function loadHubs() {
+    const res  = await fetch('/api/hubs');
+    const hubs = await res.json();
+    const list = document.getElementById('unit-list');
 
-    if (!units.length) {
-      list.innerHTML = '<p style="padding:12px;color:#444;font-size:0.85rem;">No units registered yet.</p>';
+    if (!hubs.length) {
+      list.innerHTML = '<p style="padding:12px;color:#444;font-size:0.85rem;">No hubs registered yet.</p>';
       return;
     }
 
-    list.innerHTML = units.map(u => `
-      <div class="unit-card ${u.id === selectedId ? 'selected' : ''}"
-           onclick="selectUnit('${u.id}')">
-        <div class="unit-card-header">
-          <div class="status-dot ${u.online ? 'online' : 'offline'}"></div>
-          <div class="unit-name">${u.location}</div>
-        </div>
-        <div class="unit-id">${u.id}</div>
-        <div class="unit-seen">${u.online ? 'Online' : 'Last seen ' + timeAgo(u.last_seen)}</div>
-      </div>
-    `).join('');
+    list.innerHTML = hubs.map(h => {
+      const units = h.units || [];
+      const hubOnlineCls = h.online ? 'online' : 'offline';
+      const unitCards = units.length
+        ? units.map(u => `
+          <div class="unit-card ${u.id === selectedId && h.id === selectedHubId ? 'selected' : ''}"
+               style="margin-left:12px;"
+               onclick="selectUnit('${h.id}', '${u.id}')">
+            <div class="unit-card-header">
+              <div class="status-dot ${u.online ? 'online' : 'offline'}"></div>
+              <div class="unit-name">${u.location}</div>
+            </div>
+            <div class="unit-id">${u.id}</div>
+            <div class="unit-seen">${u.online ? 'Online' : 'Last seen ' + timeAgo(u.last_seen)}</div>
+          </div>`).join('')
+        : '<p style="padding:6px 12px;color:#555;font-size:0.82rem;">No units registered.</p>';
+
+      return `
+        <div style="margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#1a1a1a;border-radius:8px 8px 0 0;">
+            <div class="status-dot ${hubOnlineCls}"></div>
+            <div>
+              <div style="font-size:0.9rem;font-weight:600;color:#ddd;">${h.name}</div>
+              <div class="unit-id">${h.online_count}/${h.unit_count} online</div>
+            </div>
+          </div>
+          ${unitCards}
+        </div>`;
+    }).join('');
   }
 
   function timeAgo(isoStr) {
@@ -883,7 +902,8 @@
   }
 
   // ── Unit detail ────────────────────────────────────────────────────────────
-  async function selectUnit(id) {
+  async function selectUnit(hubId, id) {
+    selectedHubId  = hubId;
     selectedId     = id;
     lastSnapshotTs = null;
     currentRect      = null;
@@ -911,13 +931,13 @@
     document.body.classList.add('mobile-detail');
     document.getElementById('empty-state').style.display = 'none';
     document.getElementById('detail').style.display      = 'block';
-    loadUnits();
+    loadHubs();
     await refreshDetail();
   }
 
   async function refreshDetail() {
-    if (!selectedId) return;
-    const res = await fetch(`/api/units/${selectedId}`);
+    if (!selectedId || !selectedHubId) return;
+    const res = await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}`);
     if (!res.ok) return;
     renderDetail(await res.json());
     loadHistory();
@@ -1090,7 +1110,7 @@
     const img         = document.getElementById('snap-img');
     const wrapper     = document.getElementById('snap-wrapper');
     const placeholder = document.getElementById('snap-placeholder');
-    img.src                   = `/api/units/${selectedId}/snapshot.jpg?t=${Date.now()}`;
+    img.src                   = `/api/hubs/${selectedHubId}/units/${selectedId}/snapshot.jpg?t=${Date.now()}`;
     wrapper.style.display     = 'block';
     placeholder.style.display = 'none';
     img.onload = () => {
@@ -1109,7 +1129,7 @@
   async function requestDebugCapture() {
     document.getElementById('btn-debug-capture').disabled = true;
     document.getElementById('debug-capture-status').textContent = 'Requesting capture + inference\u2026';
-    const res = await fetch(`/api/units/${selectedId}/commands/debug-capture`, { method: 'POST' });
+    const res = await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/debug-capture`, { method: 'POST' });
     if (!res.ok) {
       document.getElementById('debug-capture-status').textContent = 'Failed to send command.';
       document.getElementById('btn-debug-capture').disabled = false;
@@ -1472,7 +1492,7 @@
       row_heights: _rowHeightsFromDividers(),
       corners:     gridCorners,
     };
-    const res = await fetch(`/api/units/${selectedId}/commands/grid`, {
+    const res = await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/grid`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(body),
@@ -1484,7 +1504,7 @@
 
   async function clearGridCmd() {
     if (!selectedId) return;
-    await fetch(`/api/units/${selectedId}/commands/grid`, { method: 'DELETE' });
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/grid`, { method: 'DELETE' });
     document.getElementById('grid-status').textContent = 'Grid cleared.';
     gridInitialized = false;
     colDividers = [];
@@ -1554,7 +1574,7 @@
     setStatus('Requesting snapshot…');
     document.getElementById('btn-snap-req').disabled = true;
 
-    const res = await fetch(`/api/units/${selectedId}/commands/snapshot`, { method: 'POST' });
+    const res = await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/snapshot`, { method: 'POST' });
     if (res.status === 429) {
       setStatus('Rate limit reached — max 10 snapshots per minute.');
       document.getElementById('btn-snap-req').disabled = false;
@@ -1594,7 +1614,7 @@
     document.getElementById('btn-wifi-scan-again').disabled = true;
     openWifiModal();
 
-    await fetch(`/api/units/${selectedId}/commands/wifi/scan`, { method: 'POST' });
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/wifi/scan`, { method: 'POST' });
 
     const beforeTs = wifiScanTs;
     clearWifiScanPoll();
@@ -1690,7 +1710,7 @@
     statusEl.style.color = '#777';
     statusEl.textContent = `Connecting to '${escHtml(n.ssid)}'\u2026 (may take up to 40s)`;
 
-    await fetch(`/api/units/${selectedId}/commands/wifi/connect`, {
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/wifi/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ssid: n.ssid, password }),
@@ -1719,7 +1739,7 @@
   async function applyCrop() {
     if (!currentRect || currentRect.w < 10 || currentRect.h < 10) return;
     const f = toFrame(currentRect);
-    await fetch(`/api/units/${selectedId}/commands/crop`, {
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/crop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(f),
@@ -1734,7 +1754,7 @@
   }
 
   async function clearCrop() {
-    await fetch(`/api/units/${selectedId}/commands/crop`, { method: 'DELETE' });
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/crop`, { method: 'DELETE' });
     savedCrop   = null;
     currentRect = null;
     drawOverlay();
@@ -1745,7 +1765,7 @@
 
   // ── Interval ───────────────────────────────────────────────────────────────
   async function setInterval_(val) {
-    await fetch(`/api/units/${selectedId}/commands/interval`, {
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/interval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ interval: val }),
@@ -1756,18 +1776,18 @@
 
   // ── Actions ────────────────────────────────────────────────────────────────
   async function triggerSnap() {
-    await fetch(`/api/units/${selectedId}/commands/snap`, { method: 'POST' });
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/snap`, { method: 'POST' });
     setStatus('On-demand capture queued — will execute on next poll.');
   }
 
   async function setStandby() {
-    await fetch(`/api/units/${selectedId}/commands/standby`, { method: 'POST' });
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/standby`, { method: 'POST' });
     setStatus('Standby queued — captures will pause on next poll.');
     refreshDetail();
   }
 
   async function resumeUnit() {
-    await fetch(`/api/units/${selectedId}/commands/resume`, { method: 'POST' });
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/resume`, { method: 'POST' });
     setStatus('Resume queued — normal operation will resume on next poll.');
     refreshDetail();
   }
@@ -1777,7 +1797,7 @@
   async function loadHistory() {
     if (!selectedId) return;
     try {
-      const r = await fetch(`/api/units/${selectedId}/history`);
+      const r = await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/history`);
       if (!r.ok) return;
       const history = await r.json();
       renderHistory(history);
@@ -1815,7 +1835,7 @@
 
   function downloadData() {
     if (!selectedId) return;
-    window.location.href = `/api/units/${selectedId}/download`;
+    window.location.href = `/api/hubs/${selectedHubId}/units/${selectedId}/download`;
   }
 
   // ── Location editing ───────────────────────────────────────────────────────
@@ -1832,7 +1852,8 @@
 
   function showSidebar() {
     document.body.classList.remove('mobile-detail');
-    selectedId = null;
+    selectedHubId = null;
+    selectedId    = null;
     clearSnapshotPoll();
     clearWifiScanPoll();
     clearWifiConnectPoll();
@@ -1844,7 +1865,7 @@
   async function saveLocation() {
     const name = document.getElementById('location-input').value.trim();
     if (!name) return;
-    await fetch(`/api/units/${selectedId}/commands/location`, {
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/location`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ location: name }),
@@ -1858,7 +1879,7 @@
     const start = document.getElementById('op-start-input').value;
     const end   = document.getElementById('op-end-input').value;
     if (!start || !end) return;
-    await fetch(`/api/units/${selectedId}/commands/operational-hours`, {
+    await fetch(`/api/hubs/${selectedHubId}/units/${selectedId}/commands/operational-hours`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ start, end }),
@@ -1896,10 +1917,10 @@
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeWifiModal(); });
 
   // ── Polling ────────────────────────────────────────────────────────────────
-  setInterval(loadUnits, 15000);
+  setInterval(loadHubs, 15000);
   setInterval(() => { if (selectedId) refreshDetail(); }, 10000);
 
-  loadUnits();
+  loadHubs();
 </script>
 </body>
 </html>

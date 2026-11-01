@@ -1,328 +1,82 @@
 """
-In-memory state store for the hub dashboard.
-All data is lost on server restart — camera units repopulate it within
-one poll cycle (≤ POLL_INTERVAL seconds) after reconnecting.
+In-memory hub registry for TOD_Central.
+
+Hubs register themselves on startup (providing their URL and access key).
+TOD_Central polls each hub backend periodically and caches the result here.
+All data is lost on restart — hubs re-register on their own schedule.
 """
 
-import secrets
 import threading
 from datetime import datetime, timedelta
 
-_lock  = threading.Lock()
-_units = {}   # unit_id → unit record
+_lock = threading.Lock()
+_hubs = {}   # hub_id → hub record
 
-_MAX_HISTORY = 100   # capture records to keep per unit
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _now():
     return datetime.utcnow()
 
 
-def _is_online(unit):
-    last = datetime.fromisoformat(unit["last_seen"])
-    return _now() - last < timedelta(seconds=30)
+def _is_online(hub):
+    """Hub is online if it was polled successfully within the last 60 seconds."""
+    last = hub.get("last_seen")
+    if not last:
+        return False
+    return _now() - datetime.fromisoformat(last) < timedelta(seconds=60)
 
 
-# ── Camera unit API ────────────────────────────────────────────────────────────
+# ── Hub registry ───────────────────────────────────────────────────────────────
 
-def register_unit(unit_id, location, config):
-    """Creates or updates a unit record. Preserves the existing API key if present.
-    Returns the API key so the caller can include it in the registration response."""
+def register_hub(hub_id, name, url, access_key):
+    """Called when a hub backend POSTs to /api/hubs/register."""
     with _lock:
-        existing = _units.get(unit_id, {})
-        api_key  = existing.get("api_key") or secrets.token_hex(32)
-        _units[unit_id] = {
-            "id":               unit_id,
-            "location":         location,
-            "registered_at":    existing.get("registered_at", _now().isoformat()),
-            "last_seen":        _now().isoformat(),
-            "config":           config,
-            "standby":          existing.get("standby", False),
-            "health":           existing.get("health"),
-            "network":          existing.get("network"),
-            "wifi_scan":        existing.get("wifi_scan"),
-            "wifi_connect":     existing.get("wifi_connect"),
-            "pending_commands": existing.get("pending_commands", []),
-            "snapshot":         existing.get("snapshot"),
-            "debug_capture":    existing.get("debug_capture"),
-            "_snap_times":      existing.get("_snap_times", []),
-            "dashboard_crop":   existing.get("dashboard_crop"),
-            "dashboard_grid":   existing.get("dashboard_grid"),
-            "op_hours":         existing.get("op_hours", {"start": "08:00", "end": "17:00"}),
-            "api_key":          api_key,
-            "capture_history":  existing.get("capture_history", []),
+        existing = _hubs.get(hub_id, {})
+        _hubs[hub_id] = {
+            "id":            hub_id,
+            "name":          name,
+            "url":           url.rstrip("/"),
+            "access_key":    access_key,
+            "registered_at": existing.get("registered_at", _now().isoformat()),
+            "last_seen":     existing.get("last_seen"),
+            "units_cache":   existing.get("units_cache", []),
         }
-        return api_key
 
 
-def unit_exists(unit_id):
-    """Returns True if the unit is currently registered in the store."""
+def update_hub_poll(hub_id, units_list):
+    """Called after a successful poll of a hub backend. Updates node cache."""
     with _lock:
-        return unit_id in _units
-
-
-def verify_api_key(unit_id, key):
-    """Returns True if key matches the stored API key for this unit."""
-    with _lock:
-        u = _units.get(unit_id)
-        if not u:
-            return False
-        return u.get("api_key") == key
-
-
-def poll_unit(unit_id, config, location=None, standby=None, health=None, network=None, op_hours=None):
-    """Updates last_seen, config, standby, health, network; returns (commands, new_api_key).
-    new_api_key is only set when the unit was auto-registered (hub restart resilience)."""
-    with _lock:
-        new_api_key = None
-        if unit_id not in _units:
-            # Auto-register — handles server restarts where in-memory state is lost
-            new_api_key = secrets.token_hex(32)
-            _units[unit_id] = {
-                "id":               unit_id,
-                "location":         location or unit_id,
-                "registered_at":    _now().isoformat(),
-                "last_seen":        _now().isoformat(),
-                "config":           config,
-                "standby":          standby or False,
-                "health":           health,
-                "network":          network,
-                "wifi_scan":        None,
-                "wifi_connect":     None,
-                "pending_commands": [],
-                "snapshot":         None,
-                "debug_capture":    None,
-                "_snap_times":      [],
-                "dashboard_crop":   None,
-                "dashboard_grid":   None,
-                "op_hours":         {"start": "08:00", "end": "17:00"},
-                "api_key":          new_api_key,
-                "capture_history":  [],
-            }
-        unit = _units[unit_id]
-        unit["last_seen"] = _now().isoformat()
-        unit["config"]    = config
-        if location is not None:
-            unit["location"] = location
-        if standby is not None:
-            unit["standby"] = standby
-        if health is not None:
-            unit["health"] = health
-        if network is not None:
-            unit["network"] = network
-        if op_hours is not None:
-            unit["op_hours"] = op_hours
-        commands = list(unit["pending_commands"])
-        unit["pending_commands"] = []
-        return commands, new_api_key
-
-
-def store_wifi_scan(unit_id, networks):
-    with _lock:
-        if unit_id not in _units:
+        if hub_id not in _hubs:
             return
-        _units[unit_id]["wifi_scan"] = {
-            "networks":  networks,
-            "timestamp": _now().isoformat(),
-        }
+        _hubs[hub_id]["last_seen"]   = _now().isoformat()
+        _hubs[hub_id]["units_cache"] = units_list
 
 
-def store_wifi_connect_result(unit_id, ssid, success, message):
-    with _lock:
-        if unit_id not in _units:
-            return
-        _units[unit_id]["wifi_connect"] = {
-            "ssid":      ssid,
-            "success":   success,
-            "message":   message,
-            "timestamp": _now().isoformat(),
-        }
-
-
-def store_snapshot(unit_id, image_base64, width, height, timestamp):
-    with _lock:
-        if unit_id not in _units:
-            return
-        _units[unit_id]["snapshot"] = {
-            "data":      image_base64,
-            "width":     width,
-            "height":    height,
-            "timestamp": timestamp,
-        }
-
-
-def store_debug_capture(unit_id, image_base64, trolley_grid, detection_count, width, height):
-    with _lock:
-        if unit_id not in _units:
-            return
-        _units[unit_id]["debug_capture"] = {
-            "data":            image_base64,
-            "trolley_grid":    trolley_grid,
-            "detection_count": detection_count,
-            "width":           width,
-            "height":          height,
-            "timestamp":       _now().isoformat(),
-        }
-
-
-def store_capture(unit_id, payload):
-    """Stores a capture payload in the unit's history (newest first, capped at _MAX_HISTORY)."""
-    with _lock:
-        if unit_id not in _units:
-            return False
-        history = _units[unit_id].get("capture_history", [])
-        entry = dict(payload)
-        entry["received_at"] = _now().isoformat()
-        history.insert(0, entry)
-        _units[unit_id]["capture_history"] = history[:_MAX_HISTORY]
-        return True
-
-
-def get_capture_history(unit_id):
-    """Returns the capture history list for a unit (newest first)."""
-    with _lock:
-        u = _units.get(unit_id)
-        if not u:
-            return []
-        return list(u.get("capture_history", []))
-
-
-# ── Dashboard API ──────────────────────────────────────────────────────────────
-
-def get_all_units():
+def get_all_hubs():
+    """Returns summary of all registered hubs (with cached node summaries)."""
     with _lock:
         result = []
-        for u in _units.values():
+        for h in _hubs.values():
+            units  = h.get("units_cache", [])
+            online = sum(1 for u in units if u.get("online"))
             result.append({
-                "id":               u["id"],
-                "location":         u["location"],
-                "online":           _is_online(u),
-                "last_seen":        u["last_seen"],
-                "config":           u["config"],
-                "has_snapshot":     u["snapshot"] is not None,
-                "snapshot_timestamp": u["snapshot"]["timestamp"] if u["snapshot"] else None,
+                "id":            h["id"],
+                "name":          h["name"],
+                "online":        _is_online(h),
+                "last_seen":     h.get("last_seen"),
+                "registered_at": h.get("registered_at"),
+                "unit_count":    len(units),
+                "online_count":  online,
+                "units":         units,
             })
         return result
 
 
-def get_unit(unit_id):
+def get_hub(hub_id):
+    """Returns the full hub record (includes url + access_key for proxying)."""
     with _lock:
-        u = _units.get(unit_id)
-        if not u:
-            return None
-        snap = u["snapshot"]
-        history = u.get("capture_history", [])
-        return {
-            "id":                    u["id"],
-            "location":              u["location"],
-            "online":                _is_online(u),
-            "registered_at":         u["registered_at"],
-            "last_seen":             u["last_seen"],
-            "config":                u["config"],
-            "has_snapshot":          snap is not None,
-            "snapshot_timestamp":    snap["timestamp"] if snap else None,
-            "snapshot_width":        snap["width"]     if snap else None,
-            "snapshot_height":       snap["height"]    if snap else None,
-            "pending_commands_count": len(u["pending_commands"]),
-            "crop":                  u.get("dashboard_crop"),
-            "grid":                  u.get("dashboard_grid"),
-            "standby":               u.get("standby", False),
-            "health":                u.get("health"),
-            "network":               u.get("network"),
-            "wifi_scan":             u.get("wifi_scan"),
-            "wifi_connect":          u.get("wifi_connect"),
-            "op_hours":              u.get("op_hours", {"start": "08:00", "end": "17:00"}),
-            "debug_capture":         u.get("debug_capture"),
-            "capture_count":         len(history),
-            "last_capture":          history[0]["timestamp"] if history else None,
-        }
+        return dict(_hubs[hub_id]) if hub_id in _hubs else None
 
 
-def get_snapshot(unit_id):
+def hub_exists(hub_id):
     with _lock:
-        u = _units.get(unit_id)
-        return dict(u["snapshot"]) if u and u.get("snapshot") else None
-
-
-def set_unit_location(unit_id, location):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["location"] = location
-        return True
-
-
-def set_unit_op_hours(unit_id, start, end):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["op_hours"] = {"start": start, "end": end}
-        return True
-
-
-def set_unit_crop(unit_id, crop):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["dashboard_crop"] = crop
-        return True
-
-
-def clear_unit_crop(unit_id):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["dashboard_crop"] = None
-        return True
-
-
-def set_unit_grid(unit_id, grid):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["dashboard_grid"] = grid
-        return True
-
-
-def clear_unit_grid(unit_id):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["dashboard_grid"] = None
-        return True
-
-
-def queue_command(unit_id, command):
-    with _lock:
-        if unit_id not in _units:
-            return False
-        _units[unit_id]["pending_commands"].append(command)
-        return True
-
-
-def can_request_snapshot(unit_id):
-    """Rate limit: max 10 snapshot requests per minute per unit."""
-    with _lock:
-        u = _units.get(unit_id)
-        if not u:
-            return False
-        cutoff = _now() - timedelta(minutes=1)
-        recent = [t for t in u["_snap_times"] if datetime.fromisoformat(t) > cutoff]
-        if len(recent) >= 10:
-            return False
-        recent.append(_now().isoformat())
-        u["_snap_times"] = recent
-        return True
-
-
-def snapshot_requests_remaining(unit_id):
-    """Returns how many snapshot requests are left in the current minute."""
-    with _lock:
-        u = _units.get(unit_id)
-        if not u:
-            return 0
-        cutoff = _now() - timedelta(minutes=1)
-        recent = [t for t in u["_snap_times"] if datetime.fromisoformat(t) > cutoff]
-        return max(0, 10 - len(recent))
+        return hub_id in _hubs

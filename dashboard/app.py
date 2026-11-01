@@ -1,386 +1,189 @@
-import base64
-import io
-import json
-import os
-import re
-import zipfile
-from functools import wraps
+"""
+TOD_Central — top-level multi-hub dashboard, runs on Render.
 
-from flask import (
-    Flask, Response, abort, jsonify, redirect,
-    render_template, request, session, url_for,
-)
+Hub backends (NUCs) register here on startup with their URL and access key.
+TOD_Central polls each hub backend periodically for its node list, and
+proxies management commands from the browser to the appropriate hub backend.
+
+Required environment variables:
+  DASHBOARD_PASSWORD — password to log into TOD_Central
+  SECRET_KEY         — session secret (random string)
+"""
+
+import os
+import threading
+import time
+
+import requests
+from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 import store
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-before-deploying")
+app = FastAPI()
 
-# Set DASHBOARD_PASSWORD as an environment variable on Render.
-# If not set, the dashboard is inaccessible (returns 503) so you can't
-# accidentally leave it open in production.
-_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+# ── DEMO CODE BLOCK — delete after demo ───────────────────────────────────────
+# Hardcoded demo credentials so TOD_Central runs on Render without setting env vars.
+_PASSWORD  = os.environ.get("DASHBOARD_PASSWORD", "demo123")
+_SECRET    = os.environ.get("SECRET_KEY",         "demo-secret-key")
+# ── END DEMO CODE BLOCK — production lines below ──────────────────────────────
+# _PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+# _SECRET   = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
+app.add_middleware(SessionMiddleware, secret_key=_SECRET)
+templates = Jinja2Templates(directory="templates")
 
-# ── Auth helpers ───────────────────────────────────────────────────────────────
-
-def login_required(f):
-    """Protects dashboard-facing routes. Camera unit routes are intentionally excluded."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not _PASSWORD:
-            return Response(
-                "DASHBOARD_PASSWORD environment variable is not set. "
-                "Configure it on Render before using the dashboard.",
-                status=503, mimetype="text/plain",
-            )
-        if not session.get("authenticated"):
-            # API calls from JS get a 401; browser navigations get a redirect.
-            if request.accept_mimetypes.best == "application/json" \
-                    or request.path.startswith("/api/"):
-                return jsonify({"error": "Unauthorized"}), 401
-            return redirect(url_for("login_page"))
-        return f(*args, **kwargs)
-    return decorated
+_POLL_INTERVAL = 15   # seconds between TOD_Central → hub backend polls
 
 
-def _check_unit_auth(unit_id):
-    """Validates the Authorization: Bearer header for unit-facing endpoints.
-    Returns True if the key matches the stored API key for the unit."""
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return False
-    key = auth[7:].strip()
-    return store.verify_api_key(unit_id, key)
+# ── Auth ───────────────────────────────────────────────────────────────────────
+
+def _require_auth(request: Request):
+    if not _PASSWORD:
+        raise HTTPException(status_code=503, detail="DASHBOARD_PASSWORD is not set. Configure it on Render.")
+    if not request.session.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ── Login / logout ─────────────────────────────────────────────────────────────
 
-@app.route("/login", methods=["GET"])
-def login_page():
-    if session.get("authenticated"):
-        return redirect(url_for("dashboard"))
-    error = request.args.get("error")
-    return render_template("login.html", error=error)
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if request.session.get("authenticated"):
+        return RedirectResponse(url="/", status_code=302)
+    error = request.query_params.get("error")
+    return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
-@app.route("/login", methods=["POST"])
-def login():
+@app.post("/login")
+def login(request: Request, password: str = Form(...)):
     if not _PASSWORD:
-        return redirect(url_for("login_page", error="no_password"))
-    if request.form.get("password") == _PASSWORD:
-        session["authenticated"] = True
-        session.permanent = True
-        return redirect(url_for("dashboard"))
-    return redirect(url_for("login_page", error="wrong"))
+        return RedirectResponse(url="/login?error=no_password", status_code=302)
+    if password == _PASSWORD:
+        request.session["authenticated"] = True
+        return RedirectResponse(url="/", status_code=302)
+    return RedirectResponse(url="/login?error=wrong", status_code=302)
 
 
-@app.route("/logout", methods=["POST"])
-def logout():
-    session.clear()
-    return redirect(url_for("login_page"))
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=302)
 
 
-# ── Camera unit endpoints ──────────────────────────────────────────────────────
+# ── Hub registration (called by hub backends on startup) ──────────────────────
 
-@app.route("/api/units/register", methods=["POST"])
-def register():
-    d = request.get_json()
-    api_key = store.register_unit(d["id"], d["location"], d.get("config", {}))
-    return jsonify({"status": "registered", "api_key": api_key})
-
-
-@app.route("/api/units/<unit_id>/poll", methods=["POST"])
-def poll(unit_id):
-    # If the unit is already known, verify its API key.
-    # If it's unknown (hub restarted), auto-register and return a new key.
-    if store.unit_exists(unit_id):
-        if not _check_unit_auth(unit_id):
-            return jsonify({"error": "invalid_api_key"}), 401
-
-    d = request.get_json()
-    commands, new_api_key = store.poll_unit(
-        unit_id,
-        d.get("config", {}),
-        d.get("location"),
-        d.get("standby"),
-        d.get("health"),
-        d.get("network"),
-        d.get("op_hours"),
-    )
-    resp = {"commands": commands}
-    if new_api_key:
-        resp["api_key"] = new_api_key
-    return jsonify(resp)
+@app.post("/api/hubs/register")
+def register_hub(d: dict = Body(...)):
+    hub_id     = d.get("id",         "").strip()
+    name       = d.get("name",       hub_id)
+    url        = d.get("url",        "").strip()
+    access_key = d.get("access_key", "").strip()
+    if not hub_id or not url or not access_key:
+        raise HTTPException(status_code=400, detail="id, url, and access_key are required")
+    store.register_hub(hub_id, name, url, access_key)
+    print(f"Hub registered: {hub_id} ({name}) at {url}")
+    return {"status": "registered"}
 
 
-@app.route("/api/units/<unit_id>/snapshot", methods=["POST"])
-def receive_snapshot(unit_id):
-    if not _check_unit_auth(unit_id):
-        abort(401)
-    d = request.get_json()
-    store.store_snapshot(unit_id, d["image_base64"], d.get("width"), d.get("height"), d.get("timestamp"))
-    return jsonify({"status": "received"})
+# ── Dashboard data ─────────────────────────────────────────────────────────────
+
+@app.get("/api/hubs")
+def list_hubs(_=Depends(_require_auth)):
+    return store.get_all_hubs()
 
 
-@app.route("/api/units/<unit_id>/wifi_scan", methods=["POST"])
-def receive_wifi_scan(unit_id):
-    if not _check_unit_auth(unit_id):
-        abort(401)
-    d = request.get_json()
-    store.store_wifi_scan(unit_id, d.get("networks", []))
-    return jsonify({"status": "received"})
+@app.get("/api/hubs/{hub_id}")
+def get_hub(hub_id: str, _=Depends(_require_auth)):
+    h = store.get_hub(hub_id)
+    if not h:
+        raise HTTPException(status_code=404)
+    return {k: v for k, v in h.items() if k != "access_key"}
 
 
-@app.route("/api/units/<unit_id>/wifi_connect_result", methods=["POST"])
-def receive_wifi_connect_result(unit_id):
-    if not _check_unit_auth(unit_id):
-        abort(401)
-    d = request.get_json()
-    store.store_wifi_connect_result(unit_id, d.get("ssid"), d.get("success"), d.get("message"))
-    return jsonify({"status": "received"})
+@app.get("/api/hubs/{hub_id}/units")
+def hub_units(hub_id: str, _=Depends(_require_auth)):
+    """Returns cached node list (updated by background poller)."""
+    hub = store.get_hub(hub_id)
+    if not hub:
+        raise HTTPException(status_code=404)
+    return hub.get("units_cache", [])
 
 
-@app.route("/api/units/<unit_id>/debug_capture", methods=["POST"])
-def receive_debug_capture(unit_id):
-    if not _check_unit_auth(unit_id):
-        abort(401)
-    d = request.get_json()
-    store.store_debug_capture(
-        unit_id,
-        d.get("image_base64"),
-        d.get("trolley_grid", []),
-        d.get("detection_count", 0),
-        d.get("width"),
-        d.get("height"),
-    )
-    return jsonify({"status": "received"})
+# ── Proxy: forward all hub-specific requests to the hub backend ────────────────
+
+def _hub_headers(hub):
+    return {"Authorization": f"Bearer {hub['access_key']}"}
 
 
-@app.route("/api/units/<unit_id>/capture", methods=["POST"])
-def receive_capture(unit_id):
-    """Receives a capture payload pushed by the unit after each scheduled capture."""
-    if not _check_unit_auth(unit_id):
-        abort(401)
-    d = request.get_json()
-    store.store_capture(unit_id, d)
-    return jsonify({"status": "received"})
+@app.api_route("/api/hubs/{hub_id}/units/{rest:path}", methods=["GET", "POST", "DELETE"])
+async def hub_proxy(hub_id: str, rest: str, request: Request, _=Depends(_require_auth)):
+    """Proxies all per-unit requests to the appropriate hub backend."""
+    hub = store.get_hub(hub_id)
+    if not hub:
+        raise HTTPException(status_code=404)
+    body    = await request.body()
+    url     = f"{hub['url']}/api/units/{rest}"
+    headers = {**_hub_headers(hub)}
+    ct = request.headers.get("content-type")
+    if ct:
+        headers["Content-Type"] = ct
+    try:
+        r = requests.request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            data=body,
+            timeout=30,
+        )
+    except requests.exceptions.ConnectionError:
+        raise HTTPException(status_code=502, detail=f"Cannot reach hub '{hub_id}'")
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail=f"Hub '{hub_id}' timed out")
 
-
-# ── Dashboard data endpoints (auth required) ───────────────────────────────────
-
-@app.route("/api/units", methods=["GET"])
-@login_required
-def list_units():
-    return jsonify(store.get_all_units())
-
-
-@app.route("/api/units/<unit_id>", methods=["GET"])
-@login_required
-def get_unit(unit_id):
-    u = store.get_unit(unit_id)
-    if not u:
-        abort(404)
-    u["snapshot_requests_remaining"] = store.snapshot_requests_remaining(unit_id)
-    return jsonify(u)
-
-
-@app.route("/api/units/<unit_id>/snapshot.jpg", methods=["GET"])
-@login_required
-def get_snapshot_image(unit_id):
-    snap = store.get_snapshot(unit_id)
-    if not snap:
-        abort(404)
-    return Response(base64.b64decode(snap["data"]), mimetype="image/jpeg")
-
-
-@app.route("/api/units/<unit_id>/history", methods=["GET"])
-@login_required
-def get_history(unit_id):
-    """Returns the capture history for a unit (newest first, up to 100 records)."""
-    if not store.get_unit(unit_id):
-        abort(404)
-    return jsonify(store.get_capture_history(unit_id))
-
-
-@app.route("/api/units/<unit_id>/download", methods=["GET"])
-@login_required
-def download_data(unit_id):
-    """Downloads all stored capture history as a ZIP of JSON files."""
-    history = store.get_capture_history(unit_id)
-    if not history:
-        abort(404)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for i, capture in enumerate(history):
-            ts = (capture.get("timestamp") or f"capture_{i}") \
-                .replace(":", "-").replace(" ", "_")
-            zf.writestr(f"{ts}.json", json.dumps(capture, indent=2))
-    buf.seek(0)
-    return Response(
-        buf.read(),
-        mimetype="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={unit_id}_captures.zip"},
-    )
-
-
-# ── Dashboard command endpoints (auth required) ────────────────────────────────
-
-@app.route("/api/units/<unit_id>/commands/snapshot", methods=["POST"])
-@login_required
-def request_snapshot(unit_id):
-    if not store.can_request_snapshot(unit_id):
-        return jsonify({"error": "Rate limit: max 10 snapshots per minute"}), 429
-    if not store.queue_command(unit_id, {"type": "request_snapshot"}):
-        abort(404)
-    return jsonify({"status": "queued", "remaining": store.snapshot_requests_remaining(unit_id)})
-
-
-@app.route("/api/units/<unit_id>/commands/crop", methods=["POST"])
-@login_required
-def set_crop(unit_id):
-    d = request.get_json()
-    crop = {"x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]}
-    if not store.queue_command(unit_id, {"type": "set_crop", "data": crop}):
-        abort(404)
-    store.set_unit_crop(unit_id, crop)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/crop", methods=["DELETE"])
-@login_required
-def clear_crop(unit_id):
-    if not store.queue_command(unit_id, {"type": "clear_crop"}):
-        abort(404)
-    store.clear_unit_crop(unit_id)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/grid", methods=["POST"])
-@login_required
-def set_grid(unit_id):
-    d = request.get_json()
-    grid = {
-        "rows":        d["rows"],
-        "cols":        d["cols"],
-        "col_widths":  d["col_widths"],
-        "row_heights": d["row_heights"],
-    }
-    if d.get("corners"):
-        grid["corners"] = d["corners"]
-    if not store.queue_command(unit_id, {"type": "set_grid", "data": grid}):
-        abort(404)
-    store.set_unit_grid(unit_id, grid)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/grid", methods=["DELETE"])
-@login_required
-def clear_grid(unit_id):
-    if not store.queue_command(unit_id, {"type": "clear_grid"}):
-        abort(404)
-    store.clear_unit_grid(unit_id)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/interval", methods=["POST"])
-@login_required
-def set_interval(unit_id):
-    d = request.get_json()
-    interval = d.get("interval")
-    if interval not in ("30s", "1min", "2min"):
-        return jsonify({"error": "interval must be 30s, 1min, or 2min"}), 400
-    if not store.queue_command(unit_id, {"type": "set_interval", "interval": interval}):
-        abort(404)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/location", methods=["POST"])
-@login_required
-def set_location(unit_id):
-    d = request.get_json()
-    location = (d.get("location") or "").strip()
-    if not location:
-        return jsonify({"error": "location must not be empty"}), 400
-    if not store.queue_command(unit_id, {"type": "set_location", "location": location}):
-        abort(404)
-    store.set_unit_location(unit_id, location)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/operational-hours", methods=["POST"])
-@login_required
-def set_operational_hours(unit_id):
-    d     = request.get_json()
-    start = (d.get("start") or "").strip()
-    end   = (d.get("end")   or "").strip()
-    if not (re.match(r'^\d{2}:\d{2}$', start) and re.match(r'^\d{2}:\d{2}$', end)):
-        return jsonify({"error": "start and end must be HH:MM format"}), 400
-    if not store.queue_command(unit_id, {"type": "set_operational_hours", "start": start, "end": end}):
-        abort(404)
-    store.set_unit_op_hours(unit_id, start, end)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/debug-capture", methods=["POST"])
-@login_required
-def request_debug_capture(unit_id):
-    if not store.queue_command(unit_id, {"type": "request_debug_capture"}):
-        abort(404)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/snap", methods=["POST"])
-@login_required
-def trigger_snap(unit_id):
-    if not store.queue_command(unit_id, {"type": "snap"}):
-        abort(404)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/standby", methods=["POST"])
-@login_required
-def standby_unit(unit_id):
-    if not store.queue_command(unit_id, {"type": "set_standby"}):
-        abort(404)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/resume", methods=["POST"])
-@login_required
-def resume_unit(unit_id):
-    if not store.queue_command(unit_id, {"type": "resume"}):
-        abort(404)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/wifi/scan", methods=["POST"])
-@login_required
-def request_wifi_scan(unit_id):
-    if not store.queue_command(unit_id, {"type": "wifi_scan"}):
-        abort(404)
-    return jsonify({"status": "queued"})
-
-
-@app.route("/api/units/<unit_id>/commands/wifi/connect", methods=["POST"])
-@login_required
-def request_wifi_connect(unit_id):
-    d = request.get_json()
-    ssid = (d.get("ssid") or "").strip()
-    if not ssid:
-        return jsonify({"error": "ssid required"}), 400
-    if not store.queue_command(unit_id, {"type": "wifi_connect", "ssid": ssid, "password": d.get("password", "")}):
-        abort(404)
-    return jsonify({"status": "queued"})
+    excluded = {"transfer-encoding", "connection", "content-encoding"}
+    resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in excluded}
+    return Response(content=r.content, status_code=r.status_code, headers=resp_headers)
 
 
 # ── Dashboard UI ───────────────────────────────────────────────────────────────
 
-@app.route("/")
-@login_required
-def dashboard():
-    return render_template("dashboard.html")
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    if not _PASSWORD:
+        return Response(content="DASHBOARD_PASSWORD is not set. Configure it on Render.", status_code=503)
+    if not request.session.get("authenticated"):
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+# ── Background hub poller ──────────────────────────────────────────────────────
+
+def _poll_hubs():
+    """Background thread: polls every registered hub backend for its node list."""
+    while True:
+        for hub in store.get_all_hubs():
+            hub_full = store.get_hub(hub["id"])
+            if not hub_full:
+                continue
+            try:
+                r = requests.get(
+                    f"{hub_full['url']}/api/units",
+                    headers=_hub_headers(hub_full),
+                    timeout=10,
+                )
+                if r.ok:
+                    store.update_hub_poll(hub["id"], r.json())
+            except Exception:
+                pass   # hub offline — last_seen won't update, shows as offline
+        time.sleep(_POLL_INTERVAL)
+
+
+threading.Thread(target=_poll_hubs, daemon=True).start()
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
