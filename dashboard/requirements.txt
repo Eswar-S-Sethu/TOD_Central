@@ -3,5 +3,3 @@ uvicorn[standard]
 gunicorn
 requests
 jinja2
-python-multipart
-itsdangerous
