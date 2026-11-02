@@ -919,9 +919,12 @@
     wifiScanTs         = null;
     wifiConnectTs      = null;
     lastDebugCaptureTs = null;
-    document.getElementById('debug-capture-result').style.display = 'none';
-    document.getElementById('debug-capture-status').textContent   = '';
-    document.getElementById('btn-debug-capture').disabled         = false;
+    const _dcr = document.getElementById('debug-capture-result');
+    if (_dcr) _dcr.style.display = 'none';
+    const _dcs = document.getElementById('debug-capture-status');
+    if (_dcs) _dcs.textContent = '';
+    const _bdc = document.getElementById('btn-debug-capture');
+    if (_bdc) _bdc.disabled = false;
     _wifiNetworks = [];
     resetCropPanel();
     document.getElementById('wifi-network-list').innerHTML = '';
@@ -1099,9 +1102,10 @@
       lastDebugCaptureTs = dc.timestamp;
       clearDebugCapturePoll();
       renderDebugCapture(dc);
-      document.getElementById('btn-debug-capture').disabled = false;
-      document.getElementById('debug-capture-status').textContent =
-        `Done \u2014 ${dc.detection_count} detection(s)`;
+      const _bdc2 = document.getElementById('btn-debug-capture');
+      if (_bdc2) _bdc2.disabled = false;
+      const _dcs2 = document.getElementById('debug-capture-status');
+      if (_dcs2) _dcs2.textContent = `Done \u2014 ${dc.detection_count} detection(s)`;
     }
   }
 
@@ -1144,19 +1148,25 @@
     setTimeout(() => {
       if (debugCapturePollTimer) {
         clearDebugCapturePoll();
-        document.getElementById('debug-capture-status').textContent = 'Timed out \u2014 unit may be offline or busy.';
-        document.getElementById('btn-debug-capture').disabled = false;
+        const _s = document.getElementById('debug-capture-status');
+        if (_s) _s.textContent = 'Timed out \u2014 unit may be offline or busy.';
+        const _b = document.getElementById('btn-debug-capture');
+        if (_b) _b.disabled = false;
       }
     }, 120000);
   }
 
   function renderDebugCapture(dc) {
-    document.getElementById('debug-capture-result').style.display = 'block';
-    document.getElementById('debug-capture-img').src = 'data:image/jpeg;base64,' + dc.data;
-    document.getElementById('debug-capture-meta').textContent =
+    const result = document.getElementById('debug-capture-result');
+    if (result) result.style.display = 'block';
+    const img = document.getElementById('debug-capture-img');
+    if (img) img.src = 'data:image/jpeg;base64,' + dc.data;
+    const meta = document.getElementById('debug-capture-meta');
+    if (meta) meta.textContent =
       `${dc.width ?? '?'}\u00d7${dc.height ?? '?'} \u00b7 ${dc.detection_count} detection(s) \u00b7 ${new Date(dc.timestamp).toLocaleTimeString()}`;
 
     const container = document.getElementById('debug-grid-container');
+    if (!container) return;
     const grid = dc.trolley_grid;
     if (!grid || grid.length === 0) {
       container.innerHTML = '<p style="font-size:0.82em;color:#888;margin:4px 0;">No grid configured \u2014 trolley_grid not available.</p>';
