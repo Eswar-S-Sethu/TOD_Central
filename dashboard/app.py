@@ -7,18 +7,19 @@ proxies management commands from the browser to the appropriate hub backend.
 """
 
 import os
+import pathlib
 import threading
 import time
 
 import requests
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
 
 import store
 
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+
+_DASHBOARD_HTML = (pathlib.Path(__file__).parent / "templates" / "dashboard.html").read_text(encoding="utf-8")
 
 _POLL_INTERVAL = 15   # seconds between TOD_Central → hub backend polls
 
@@ -26,8 +27,8 @@ _POLL_INTERVAL = 15   # seconds between TOD_Central → hub backend polls
 # ── Dashboard UI ───────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+def dashboard():
+    return _DASHBOARD_HTML
 
 
 # ── Hub registration (called by hub backends on startup) ──────────────────────
