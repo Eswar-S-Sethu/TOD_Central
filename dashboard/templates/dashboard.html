@@ -89,6 +89,10 @@
     .unit-id      { font-size: 0.75rem; color: #555; margin-top: 2px; }
     .unit-seen    { font-size: 0.72rem; color: #555; margin-top: 4px; }
 
+    .hub-header { cursor: pointer; border-radius: 8px 8px 0 0; transition: background 0.15s; }
+    .hub-header:hover { background: #242424 !important; }
+    .hub-header.selected-hub { background: #1e2a1e !important; outline: 1px solid #2a7; }
+
     /* ── Main panel ── */
     #main {
       flex: 1;
@@ -612,16 +616,45 @@
       <h1>TOD Central</h1>
       <p>Dashboard</p>
     </div>
-    <form method="POST" action="/logout">
-      <button type="submit" id="signout-btn">Sign out</button>
-    </form>
   </div>
   <div id="unit-list"><p style="padding:12px;color:#444;font-size:0.85rem;">Loading&hellip;</p></div>
 </aside>
 
 <!-- ── Main panel ──────────────────────────────────────────────────────────── -->
 <main id="main">
-  <div id="empty-state">Select a camera unit from the sidebar.</div>
+  <div id="empty-state">Select a hub or unit from the sidebar.</div>
+
+  <!-- Hub detail panel -->
+  <div id="hub-detail" style="display:none; max-width:1100px;">
+    <button class="btn-back" onclick="showSidebar()">&#8592; Hubs</button>
+
+    <div class="detail-header">
+      <div class="status-dot" id="hd-status-dot"></div>
+      <div>
+        <h2 id="hd-name"></h2>
+        <div class="unit-id" id="hd-id"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="info-row">
+        <div class="info-item"><label>Status</label><span id="hd-online"></span></div>
+        <div class="info-item"><label>Last seen</label><span id="hd-last-seen"></span></div>
+        <div class="info-item"><label>Registered</label><span id="hd-registered"></span></div>
+        <div class="info-item"><label>Units</label><span id="hd-units"></span></div>
+      </div>
+      <div class="btn-row" style="margin-top:14px;">
+        <button class="btn-primary" id="btn-open-hub" onclick="openHubDashboard()">Open Hub Dashboard</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Units</div>
+      <div id="hd-units-list">
+        <p style="color:#555; font-size:0.85rem;">Loading&hellip;</p>
+      </div>
+    </div>
+  </div>
 
   <div id="detail">
     <button class="btn-back" onclick="showSidebar()">&#8592; Units</button>
@@ -882,7 +915,9 @@
 
       return `
         <div style="margin-bottom:8px;">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#1a1a1a;border-radius:8px 8px 0 0;">
+          <div class="hub-header${h.id === selectedHubId && !selectedId ? ' selected-hub' : ''}"
+               onclick="selectHub('${h.id}')"
+               style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#1a1a1a;">
             <div class="status-dot ${hubOnlineCls}"></div>
             <div>
               <div style="font-size:0.9rem;font-weight:600;color:#ddd;">${h.name}</div>
@@ -899,6 +934,70 @@
     if (diff < 60)   return diff + 's ago';
     if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
     return Math.floor(diff / 3600) + 'h ago';
+  }
+
+  // ── Hub detail ─────────────────────────────────────────────────────────────
+  async function selectHub(hubId) {
+    selectedHubId = hubId;
+    selectedId    = null;
+    clearSnapshotPoll();
+    clearWifiScanPoll();
+    clearWifiConnectPoll();
+    clearDebugCapturePoll();
+    closeWifiModal();
+
+    document.body.classList.add('mobile-detail');
+    document.getElementById('empty-state').style.display  = 'none';
+    document.getElementById('detail').style.display       = 'none';
+    document.getElementById('hub-detail').style.display   = 'block';
+
+    loadHubs();
+    await refreshHubDetail();
+  }
+
+  async function refreshHubDetail() {
+    if (!selectedHubId || selectedId) return;
+    const res = await fetch(`/api/hubs/${selectedHubId}`);
+    if (!res.ok) return;
+    renderHubDetail(await res.json());
+  }
+
+  function renderHubDetail(hub) {
+    document.getElementById('hd-name').textContent      = hub.name;
+    document.getElementById('hd-id').textContent        = hub.id;
+
+    const dot = document.getElementById('hd-status-dot');
+    dot.className = 'status-dot ' + (hub.online ? 'online' : 'offline');
+
+    document.getElementById('hd-online').textContent     = hub.online ? 'Online' : 'Offline';
+    document.getElementById('hd-last-seen').textContent  = hub.last_seen ? timeAgo(hub.last_seen) : '—';
+    document.getElementById('hd-registered').textContent = hub.registered_at ? formatDate(hub.registered_at) : '—';
+    document.getElementById('hd-units').textContent      = `${hub.online_count}/${hub.unit_count} online`;
+
+    const btn = document.getElementById('btn-open-hub');
+    btn.dataset.url  = hub.url || '';
+    btn.disabled     = !hub.url;
+
+    const units     = hub.units || [];
+    const container = document.getElementById('hd-units-list');
+    if (!units.length) {
+      container.innerHTML = '<p style="color:#555; font-size:0.85rem;">No units registered under this hub.</p>';
+      return;
+    }
+    container.innerHTML = units.map(u => `
+      <div class="unit-card" onclick="selectUnit('${hub.id}', '${u.id}')">
+        <div class="unit-card-header">
+          <div class="status-dot ${u.online ? 'online' : 'offline'}"></div>
+          <div class="unit-name">${u.location || u.id}</div>
+        </div>
+        <div class="unit-id">${u.id}</div>
+        <div class="unit-seen">${u.online ? 'Online' : (u.last_seen ? 'Last seen ' + timeAgo(u.last_seen) : 'Never seen')}</div>
+      </div>`).join('');
+  }
+
+  function openHubDashboard() {
+    const url = document.getElementById('btn-open-hub').dataset.url;
+    if (url) window.open(url, '_blank');
   }
 
   // ── Unit detail ────────────────────────────────────────────────────────────
@@ -1867,9 +1966,12 @@
     clearSnapshotPoll();
     clearWifiScanPoll();
     clearWifiConnectPoll();
+    clearDebugCapturePoll();
     closeWifiModal();
     document.getElementById('detail').style.display      = 'none';
+    document.getElementById('hub-detail').style.display  = 'none';
     document.getElementById('empty-state').style.display = '';
+    loadHubs();
   }
 
   async function saveLocation() {
@@ -1928,7 +2030,10 @@
 
   // ── Polling ────────────────────────────────────────────────────────────────
   setInterval(loadHubs, 15000);
-  setInterval(() => { if (selectedId) refreshDetail(); }, 10000);
+  setInterval(() => {
+    if (selectedId)          refreshDetail();
+    else if (selectedHubId)  refreshHubDetail();
+  }, 10000);
 
   loadHubs();
 </script>

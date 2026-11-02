@@ -58,7 +58,21 @@ def get_hub(hub_id: str):
     h = store.get_hub(hub_id)
     if not h:
         raise HTTPException(status_code=404)
-    return {k: v for k, v in h.items() if k != "access_key"}
+    from datetime import datetime, timedelta
+    last = h.get("last_seen")
+    online = bool(last and datetime.utcnow() - datetime.fromisoformat(last) < timedelta(seconds=60))
+    units = h.get("units_cache", [])
+    return {
+        "id":            h["id"],
+        "name":          h["name"],
+        "url":           h.get("url", ""),
+        "online":        online,
+        "last_seen":     h.get("last_seen"),
+        "registered_at": h.get("registered_at"),
+        "unit_count":    len(units),
+        "online_count":  sum(1 for u in units if u.get("online")),
+        "units":         units,
+    }
 
 
 @app.get("/api/hubs/{hub_id}/units")
